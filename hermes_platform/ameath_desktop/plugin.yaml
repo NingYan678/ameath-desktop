@@ -1,0 +1,4 @@
+name: ameath-desktop
+version: "0.1.0"
+description: Native local desktop terminal for Hermes.
+kind: platform

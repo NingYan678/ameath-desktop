@@ -1,0 +1,15 @@
+.venv/
+.env
+.cache/
+data/
+build/
+dist/
+*.spec
+*.log
+.hermes_bridge_status.json
+.hermes_bridge_runtime.json
+__pycache__/
+.pytest_cache/
+*.py[cod]
+_reference/
+assets/recovered/

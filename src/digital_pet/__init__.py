@@ -1,0 +1,1 @@
+"""Local Windows desktop pet."""
