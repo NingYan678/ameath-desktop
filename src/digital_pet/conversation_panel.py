@@ -482,6 +482,7 @@ class ConversationPanel(QWidget):
         content = QLabel(message.content + ("  …" if message.draft else ""), frame)
         content.setWordWrap(True)
         content.setTextFormat(Qt.PlainText)
+        content.setTextInteractionFlags(Qt.TextSelectableByMouse)
         frame_layout.addWidget(content)
         if message.role == "user":
             frame.setObjectName("messageOutgoing")
