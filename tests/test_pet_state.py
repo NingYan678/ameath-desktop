@@ -53,6 +53,12 @@ def test_proactive_respects_quiet_hours_and_protected_states(tmp_path):
         assert engine.proactive_event(fullscreen=fullscreen, busy=busy, now=instant) is None
 
 
+def test_manual_proactive_event_overrides_automatic_quiet_and_dnd_limits(tmp_path):
+    engine = PetStateEngine(PetStateStore(tmp_path), DesktopPreferences(do_not_disturb=True))
+
+    assert engine.proactive_event(fullscreen=True, busy=True, now=datetime(2026, 7, 27, 23, 30), manual=True)
+
+
 def test_proactive_catalogue_is_original_and_balanced_for_reply_invites():
     forbidden = ("主人", "老公", "老婆", "亲爱的")
     assert len(PROACTIVE_EVENTS) == 40

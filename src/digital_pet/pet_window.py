@@ -313,6 +313,19 @@ class PetWindow(QWidget):
         self._react(event.animation, event.text, 4_000)
         self._schedule_proactive()
 
+    def trigger_proactive_now(self) -> bool:
+        """Show one locally authored companion moment on the user's request."""
+        if self._paused or self._drag_offset is not None or self._pending_action is not None:
+            self._speak("等我忙完眼前这件事，就马上来找你。")
+            return False
+        event = self._pet_state.proactive_event(fullscreen=False, busy=self.conversation.is_expanded, manual=True)
+        if event is None:
+            self._speak("我现在没法分心，稍等我一下。")
+            return False
+        self._react(event.animation, event.text, 4_000)
+        self._schedule_proactive()
+        return True
+
     def _note_user_interaction(self) -> None:
         self._pet_state.record_interaction()
         self._schedule_proactive()

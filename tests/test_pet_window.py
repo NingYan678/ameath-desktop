@@ -59,3 +59,12 @@ def test_toggle_proactive_persists_and_emits_current_state(tmp_path):
     assert window.preferences.proactive_enabled is not original
     assert states == [not original]
     window.close()
+
+
+def test_manual_proactive_trigger_shows_a_local_companion_event(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = PetWindow(make_settings(tmp_path))
+
+    assert window.trigger_proactive_now()
+    assert window._proactive_timer.isActive()
+    window.close()

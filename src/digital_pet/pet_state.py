@@ -149,9 +149,22 @@ class PetStateEngine:
         )
         self.store.save(self.state)
 
-    def proactive_event(self, *, fullscreen: bool, busy: bool, now: datetime | None = None) -> ProactiveEvent | None:
+    def proactive_event(
+        self,
+        *,
+        fullscreen: bool,
+        busy: bool,
+        now: datetime | None = None,
+        manual: bool = False,
+    ) -> ProactiveEvent | None:
         moment = now or datetime.now()
-        if not self.preferences.proactive_enabled or self.preferences.do_not_disturb or fullscreen or busy or self._quiet(moment):
+        if not manual and (
+            not self.preferences.proactive_enabled
+            or self.preferences.do_not_disturb
+            or fullscreen
+            or busy
+            or self._quiet(moment)
+        ):
             return None
         event = self._choose_event(moment.hour)
         recent = (*self.state.recent_proactive_ids, event.event_id)[-12:]

@@ -99,6 +99,7 @@ class ApplicationController:
         self._menu = QMenu()
         self._menu.addAction("显示 / 隐藏", self.toggle_visibility)
         self._menu.addAction("打开聊天", self._open_chat)
+        self._menu.addAction("让爱弥斯说句话", window.trigger_proactive_now)
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("暂停动画", window.toggle_pause)
         self._proactive_action = self._menu.addAction("主动互动：已开启", window.toggle_proactive)
