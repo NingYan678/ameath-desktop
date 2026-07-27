@@ -65,10 +65,10 @@ class ApplicationController:
         self._quitting = False
         self.app.aboutToQuit.connect(self._mutex.release)
 
-    def acquire_single_instance(self) -> bool:
-        """Returns False after asking an existing instance to show itself."""
+    def acquire_single_instance(self, *, command: bytes = b"show") -> bool:
+        """Returns False after sending a small local command to the existing instance."""
         if not self._mutex.acquire():
-            self._wake_existing_instance()
+            self._wake_existing_instance(command)
             return False
         # Owning the mutex proves no live process can own this endpoint.
         QLocalServer.removeServer(self.server_name)
@@ -78,13 +78,13 @@ class ApplicationController:
         self._mutex.release()
         return False
 
-    def _wake_existing_instance(self) -> None:
+    def _wake_existing_instance(self, command: bytes = b"show") -> None:
         """Best effort only: a second launch must never become a second pet."""
         for _ in range(3):
             socket = QLocalSocket()
             socket.connectToServer(self.server_name, QIODevice.WriteOnly)
             if socket.waitForConnected(500):
-                socket.write(b"show")
+                socket.write(command)
                 socket.waitForBytesWritten(300)
                 socket.disconnectFromServer()
                 return
@@ -166,8 +166,11 @@ class ApplicationController:
                 self._read_command(socket)
 
     def _read_command(self, socket: QLocalSocket) -> None:
-        if bytes(socket.readAll()).strip() == b"show":
+        command = bytes(socket.readAll()).strip()
+        if command == b"show":
             self.show_window()
+        elif command == b"proactive" and self._window is not None:
+            self._window.trigger_proactive_now()
 
     def _release_peer(self, socket: QLocalSocket) -> None:
         if socket in self._peers:

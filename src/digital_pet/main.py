@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from .ameath_runtime import AmeathRuntimeService
@@ -88,7 +89,8 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Ameath Desktop Pet")
     controller = ApplicationController(app)
-    if not controller.acquire_single_instance():
+    say_now = "--say-now" in sys.argv
+    if not controller.acquire_single_instance(command=b"proactive" if say_now else b"show"):
         return 0
     settings = load_settings()
     _configure_runtime_logging(settings.data_root)
@@ -142,4 +144,6 @@ def run() -> int:
 
     controller.attach(window, diagnostics=export_diagnostics)
     window.show()
+    if say_now:
+        QTimer.singleShot(200, window.trigger_proactive_now)
     return app.exec()

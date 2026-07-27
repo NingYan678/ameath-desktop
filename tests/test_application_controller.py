@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -87,3 +88,15 @@ def test_mutex_owner_cleans_a_stale_endpoint_before_listening(monkeypatch):
 
     assert controller.acquire_single_instance()
     assert removed == [controller.server_name]
+
+
+def test_local_proactive_command_triggers_the_attached_pet():
+    app = QApplication.instance() or QApplication([])
+    controller = ApplicationController(app)
+    calls = []
+    controller._window = SimpleNamespace(trigger_proactive_now=lambda: calls.append("proactive"))
+    socket = SimpleNamespace(readAll=lambda: b"proactive")
+
+    controller._read_command(socket)
+
+    assert calls == ["proactive"]
