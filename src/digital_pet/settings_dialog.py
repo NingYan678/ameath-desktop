@@ -186,8 +186,17 @@ class SettingsDialog(QDialog):
         self.launch_login.setChecked(self._startup.is_enabled() or self._initial.launch_at_login)
         self.close_to_tray = QCheckBox("关闭窗口时隐藏到系统托盘", card)
         self.close_to_tray.setChecked(self._initial.close_to_tray)
-        self.proactive = QCheckBox("允许适度主动陪伴（每天最多 3 次）", card)
+        self.proactive = QCheckBox("允许爱弥斯主动陪伴", card)
         self.proactive.setChecked(self._initial.proactive_enabled)
+        proactive_row = QHBoxLayout()
+        proactive_row.addWidget(QLabel("最长互动间隔", card))
+        self.proactive_interval = QSpinBox(card)
+        self.proactive_interval.setRange(5, 240)
+        self.proactive_interval.setSuffix(" 分钟")
+        self.proactive_interval.setValue(self._initial.proactive_max_interval_minutes)
+        self.proactive_interval.setEnabled(self.proactive.isChecked())
+        proactive_row.addWidget(self.proactive_interval)
+        proactive_row.addStretch(1)
         self.auto_game = QCheckBox("自动检测全屏应用并降低层级", card)
         self.auto_game.setChecked(self._initial.auto_game_mode)
         self.do_not_disturb = QCheckBox("勿扰模式（完全静默）", card)
@@ -212,6 +221,8 @@ class SettingsDialog(QDialog):
         self.always_top.toggled.connect(self._preview_current)
         self.close_to_tray.toggled.connect(self._preview_current)
         self.proactive.toggled.connect(self._preview_current)
+        self.proactive.toggled.connect(self.proactive_interval.setEnabled)
+        self.proactive_interval.valueChanged.connect(self._preview_current)
         self.auto_game.toggled.connect(self._preview_current)
         self.do_not_disturb.toggled.connect(self._preview_current)
         card_layout.addWidget(self.animation_speed)
@@ -220,6 +231,7 @@ class SettingsDialog(QDialog):
         card_layout.addWidget(self.launch_login)
         card_layout.addWidget(self.close_to_tray)
         card_layout.addWidget(self.proactive)
+        card_layout.addLayout(proactive_row)
         card_layout.addWidget(self.auto_game)
         card_layout.addWidget(self.do_not_disturb)
         card_layout.addLayout(quiet_row)
@@ -317,6 +329,7 @@ class SettingsDialog(QDialog):
             launch_at_login=self.launch_login.isChecked(),
             close_to_tray=self.close_to_tray.isChecked(),
             proactive_enabled=self.proactive.isChecked(),
+            proactive_max_interval_minutes=self.proactive_interval.value(),
             quiet_start_hour=self.quiet_start.value(),
             quiet_end_hour=self.quiet_end.value(),
             auto_game_mode=self.auto_game.isChecked(),

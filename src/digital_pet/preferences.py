@@ -12,7 +12,7 @@ from .storage import atomic_write_json
 
 @dataclass(frozen=True)
 class DesktopPreferences:
-    schema_version: int = 3
+    schema_version: int = 4
     pet_size: int = 200
     compact_width: int = 360
     expanded_width: int = 520
@@ -25,7 +25,7 @@ class DesktopPreferences:
     launch_at_login: bool = False
     close_to_tray: bool = True
     proactive_enabled: bool = True
-    proactive_daily_limit: int = 3
+    proactive_max_interval_minutes: int = 45
     quiet_start_hour: int = 23
     quiet_end_hour: int = 8
     auto_game_mode: bool = True
@@ -73,7 +73,7 @@ class UISettingsStore:
             launch_at_login=bool(payload.get("launch_at_login", defaults.launch_at_login)),
             close_to_tray=bool(payload.get("close_to_tray", defaults.close_to_tray)),
             proactive_enabled=bool(payload.get("proactive_enabled", defaults.proactive_enabled)),
-            proactive_daily_limit=self._bounded_int(payload.get("proactive_daily_limit"), defaults.proactive_daily_limit, 0, 10),
+            proactive_max_interval_minutes=self._bounded_int(payload.get("proactive_max_interval_minutes"), defaults.proactive_max_interval_minutes, 5, 240),
             quiet_start_hour=self._bounded_int(payload.get("quiet_start_hour"), defaults.quiet_start_hour, 0, 23),
             quiet_end_hour=self._bounded_int(payload.get("quiet_end_hour"), defaults.quiet_end_hour, 0, 23),
             auto_game_mode=bool(payload.get("auto_game_mode", defaults.auto_game_mode)),

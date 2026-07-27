@@ -23,8 +23,8 @@ from .settings_dialog import SettingsDialog
 
 
 ANIMATIONS = {
-    "idle_soft": "idle1.gif", "idle_alert": "idle2.gif", "idle_happy": "idle3.gif", "idle_sleepy": "idle4.gif",
-    "move": "move.gif", "drag": "drag.gif", "notice": "screen1.gif", "sad": "screen2.gif",
+    "idle_soft": "screen3.gif", "idle_alert": "screen1.gif", "idle_happy": "sd_idle_happy.gif", "idle_sleepy": "screen6.gif",
+    "move": "sd_move.gif", "drag": "sd_drag.gif", "notice": "screen1.gif", "sad": "screen2.gif",
     "attention": "screen3.gif", "thinking": "screen4.gif", "busy": "screen5.gif", "rest": "screen6.gif",
     "question": "screen7.gif", "music": "ameath.gif",
 }
@@ -142,6 +142,9 @@ class PetWindow(QWidget):
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(9_000)
         self._idle_timer.timeout.connect(self._auto_switch)
+        self._proactive_timer = QTimer(self)
+        self._proactive_timer.setSingleShot(True)
+        self._proactive_timer.timeout.connect(self._trigger_proactive)
         self._rest_timer = QTimer(self)
         self._rest_timer.setSingleShot(True)
         self._rest_timer.timeout.connect(self._rest_after_inactivity)
@@ -173,6 +176,7 @@ class PetWindow(QWidget):
             self.pet.setStyleSheet("color: white; background: rgba(20, 30, 48, 160); border-radius: 16px;")
         self._speak("正在连接 Hermes Gateway…", BubblePriority.ACTIVITY)
         self._idle_timer.start()
+        self._schedule_proactive()
         self._register_activity()
         self._supervisor.start()
 
@@ -202,6 +206,7 @@ class PetWindow(QWidget):
         return True
 
     def apply_preferences(self, preferences: DesktopPreferences, *, update_window_flags: bool = True) -> None:
+        previous = self.preferences
         self.preferences = preferences
         self._pet_state.update_preferences(preferences)
         self.conversation.apply_preferences(preferences)
@@ -211,6 +216,11 @@ class PetWindow(QWidget):
         if update_window_flags:
             self._refresh_window_flags()
         self._layout_window()
+        if (
+            previous.proactive_enabled != preferences.proactive_enabled
+            or previous.proactive_max_interval_minutes != preferences.proactive_max_interval_minutes
+        ):
+            self._schedule_proactive()
 
     @property
     def game_mode_active(self) -> bool:
@@ -280,11 +290,31 @@ class PetWindow(QWidget):
         self._set_auto_game_mode(fullscreen)
         if self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive():
             return
-        prompt = self._pet_state.proactive_message(fullscreen=fullscreen, busy=self.conversation.is_expanded)
-        if prompt:
-            self._react("notice", prompt, 4_000)
-            return
         self._load_animation(random.choice(IDLE_ANIMATIONS))
+
+    def _schedule_proactive(self) -> None:
+        self._proactive_timer.stop()
+        if self.preferences.proactive_enabled:
+            self._proactive_timer.start(self._pet_state.proactive_delay_ms())
+
+    def _trigger_proactive(self) -> None:
+        fullscreen = self.preferences.auto_game_mode and self._activity_monitor.fullscreen_foreground()
+        self._set_auto_game_mode(fullscreen)
+        blocked = self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
+        if blocked:
+            self._proactive_timer.start(5_000)
+            return
+        event = self._pet_state.proactive_event(fullscreen=fullscreen, busy=self.conversation.is_expanded)
+        if event is None:
+            # A due interaction waits quietly until the user leaves a protected state.
+            self._proactive_timer.start(60_000)
+            return
+        self._react(event.animation, event.text, 4_000)
+        self._schedule_proactive()
+
+    def _note_user_interaction(self) -> None:
+        self._pet_state.record_interaction()
+        self._schedule_proactive()
 
     def _set_auto_game_mode(self, enabled: bool) -> None:
         if enabled == self._auto_game_mode:
@@ -448,6 +478,7 @@ class PetWindow(QWidget):
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
         if event.button() == Qt.LeftButton:
+            self._note_user_interaction()
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._drag_started = False
             self._react("notice", "请问有什么吩咐？", 1_500)
@@ -522,7 +553,7 @@ class PetWindow(QWidget):
 
     def _send_chat_message(self, text: str) -> None:
         self._register_activity()
-        self._pet_state.record_interaction()
+        self._note_user_interaction()
         self.conversation.add_user_message(text)
         self._load_animation("busy")
         self.conversation.show_status("消息已交给 Hermes…")

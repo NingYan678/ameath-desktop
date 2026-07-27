@@ -37,6 +37,18 @@ def test_settings_dialog_previews_and_cancels_back_to_initial_values(tmp_path):
     assert previewed[-1] == initial
 
 
+def test_settings_dialog_exposes_a_user_controlled_proactive_interval(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    previewed = []
+    dialog = SettingsDialog(DesktopPreferences(), UISettingsStore(tmp_path), FakeStartup(), FakeHermes(), previewed.append)
+
+    dialog.proactive_interval.setValue(90)
+
+    assert previewed[-1].proactive_max_interval_minutes == 90
+    dialog.proactive.setChecked(False)
+    assert not dialog.proactive_interval.isEnabled()
+
+
 def test_settings_dialog_saves_preferences_and_stages_global_hermes_update(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     startup = FakeStartup()
