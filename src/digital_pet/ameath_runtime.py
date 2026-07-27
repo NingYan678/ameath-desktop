@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -11,6 +12,16 @@ from pathlib import Path
 
 from .config import Settings, is_packaged
 from .credentials import CredentialStore
+from .runtime_descriptor import (
+    RuntimeFingerprint,
+    RuntimeHealth,
+    pid_belongs_to_runtime,
+    quick_runtime_health,
+    stop_verified_runtime,
+)
+
+
+LOGGER = logging.getLogger("digital_pet.runtime")
 
 
 AMEATH_PERSONALITY = """You are 爱弥斯（Ameath）, the user's capable and warm personal AI butler.
@@ -55,13 +66,26 @@ class AmeathRuntimeService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.credentials = CredentialStore(settings.data_root)
+        self._verified_runtime: RuntimeFingerprint | None = None
+        self._checked_runtime: RuntimeFingerprint | None = None
+        self._checked_health = RuntimeHealth.STOPPED
 
     @property
     def configured(self) -> bool:
-        if not (self.settings.hermes_home / "config.yaml").is_file():
+        if not self._config_is_valid():
+            LOGGER.info("Ameath runtime configuration is missing or invalid")
             return False
         profile = self._read_profile()
-        return bool(profile and (not profile.needs_api_key or self.credentials.load() is not None))
+        if profile is None:
+            LOGGER.info("Ameath model profile is missing or invalid")
+            return False
+        if not profile.needs_api_key:
+            return True
+        credential, reason = self.credentials.load_with_status()
+        if credential is None:
+            LOGGER.info("Ameath credential is unavailable: %s", reason)
+            return False
+        return True
 
     @property
     def runtime_available(self) -> bool:
@@ -70,6 +94,7 @@ class AmeathRuntimeService:
     def prepare(self) -> None:
         self.settings.data_root.mkdir(parents=True, exist_ok=True)
         self.settings.hermes_home.mkdir(parents=True, exist_ok=True)
+        self._restore_configuration_if_possible()
         self._install_desktop_plugin()
 
     def save_profile(self, profile: ModelProfile) -> None:
@@ -87,7 +112,11 @@ class AmeathRuntimeService:
         else:
             self.credentials.clear()
         public_profile = {"provider": profile.provider, "model": profile.model.strip(), "base_url": profile.base_url.rstrip("/")}
-        self._profile_path.write_text(json.dumps(public_profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self._write_text(self._profile_path, json.dumps(public_profile, ensure_ascii=False, indent=2) + "\n")
+        self._write_text(self._profile_backup_path, json.dumps(public_profile, ensure_ascii=False, indent=2) + "\n")
+        self._write_config(profile)
+
+    def _write_config(self, profile: ModelProfile) -> None:
         config = {
             "model": {"default": profile.model.strip(), "provider": "auto", "base_url": profile.base_url.rstrip("/")},
             "agent": {
@@ -101,12 +130,13 @@ class AmeathRuntimeService:
             "platform_toolsets": {"ameath_desktop": ["clarify", "cronjob", "file", "memory", "skills", "terminal", "todo", "web"]},
         }
         # JSON is valid YAML, avoids shipping a second YAML dependency in the pet.
-        self._config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self._write_text(self._config_path, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
 
     def start_gateway(self) -> bool:
         self.prepare()
-        if self.is_gateway_ready():
-            return True
+        health = self.quick_health()
+        if health in {RuntimeHealth.READY, RuntimeHealth.VERIFYING}:
+            return health is RuntimeHealth.READY
         if not self.runtime_available or not self.configured:
             return False
         environment = os.environ.copy()
@@ -125,27 +155,43 @@ class AmeathRuntimeService:
         return True
 
     def restart_gateway(self) -> bool:
-        """Restart only this app's Gateway, restoring its DPAPI credential."""
-        source = str(self.settings.hermes_source).replace("'", "''")
-        command = (
-            "$gateway = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*"
-            + source
-            + "*' -and $_.CommandLine -match 'hermes_cli.*gateway.*run' } | Select-Object -First 1; "
-            "if ($gateway) { Stop-Process -Id $gateway.ProcessId -Force }"
-        )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", command],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-        )
+        """Restart only the PID described by this runtime's verified descriptor."""
+        if not stop_verified_runtime(self.settings.desktop_runtime_path, self.settings.hermes_source):
+            return False
         return self.start_gateway()
 
     def is_gateway_ready(self) -> bool:
-        try:
-            descriptor = json.loads(self.settings.desktop_runtime_path.read_text(encoding="utf-8"))
-            return descriptor.get("state") == "ready" and isinstance(descriptor.get("port"), int)
-        except (OSError, ValueError, TypeError):
-            return False
+        return self.quick_health() is RuntimeHealth.READY
+
+    def quick_health(self) -> RuntimeHealth:
+        health, fingerprint = quick_runtime_health(
+            self.settings.desktop_runtime_path,
+            self.settings.hermes_source,
+            None,
+        )
+        if health is RuntimeHealth.STOPPED:
+            return health
+        return self._checked_health if fingerprint == self._checked_runtime else RuntimeHealth.VERIFYING
+
+    def verify_identity(self) -> RuntimeHealth:
+        health, fingerprint = quick_runtime_health(
+            self.settings.desktop_runtime_path,
+            self.settings.hermes_source,
+            None,
+        )
+        if health is RuntimeHealth.STOPPED or fingerprint is None:
+            self._verified_runtime = None
+            self._checked_runtime = fingerprint
+            self._checked_health = RuntimeHealth.STOPPED
+            return RuntimeHealth.STOPPED
+        self._checked_runtime = fingerprint
+        if pid_belongs_to_runtime(fingerprint.pid, self.settings.hermes_source):
+            self._verified_runtime = fingerprint
+            self._checked_health = RuntimeHealth.READY
+            return RuntimeHealth.READY
+        self._verified_runtime = None
+        self._checked_health = RuntimeHealth.UNTRUSTED
+        return RuntimeHealth.UNTRUSTED
 
     @property
     def _config_path(self) -> Path:
@@ -155,12 +201,48 @@ class AmeathRuntimeService:
     def _profile_path(self) -> Path:
         return self.settings.hermes_home / "model_profile.json"
 
+    @property
+    def _profile_backup_path(self) -> Path:
+        return self.settings.hermes_home / "model_profile.backup.json"
+
     def _read_profile(self) -> ModelProfile | None:
+        return self._read_profile_path(self._profile_path)
+
+    @staticmethod
+    def _read_profile_path(path: Path) -> ModelProfile | None:
         try:
-            payload = json.loads(self._profile_path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
             return ModelProfile(str(payload["provider"]), str(payload["model"]), str(payload["base_url"]))
         except (OSError, ValueError, KeyError, TypeError):
             return None
+
+    def _config_is_valid(self) -> bool:
+        try:
+            payload = json.loads(self._config_path.read_text(encoding="utf-8"))
+            return isinstance(payload, dict) and isinstance(payload.get("model"), dict)
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def _restore_configuration_if_possible(self) -> None:
+        profile = self._read_profile()
+        if profile is None:
+            profile = self._read_profile_path(self._profile_backup_path)
+            if profile is not None:
+                public_profile = {"provider": profile.provider, "model": profile.model, "base_url": profile.base_url}
+                self._write_text(self._profile_path, json.dumps(public_profile, ensure_ascii=False, indent=2) + "\n")
+                LOGGER.info("Restored Ameath model profile from its public backup")
+        if profile is None or self._config_is_valid():
+            return
+        if profile.needs_api_key and self.credentials.load() is None:
+            return
+        self._write_config(profile)
+        LOGGER.info("Restored Ameath runtime configuration from the model profile")
+
+    @staticmethod
+    def _write_text(path: Path, content: str) -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
 
     def _install_desktop_plugin(self) -> None:
         source_base = self.settings.resources_root if is_packaged() else self.settings.install_root

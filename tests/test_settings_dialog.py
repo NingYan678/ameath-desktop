@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from digital_pet.hermes_settings import HermesSettingsSnapshot
 from digital_pet.preferences import DesktopPreferences, UISettingsStore
@@ -67,3 +67,58 @@ def test_settings_dialog_can_save_desktop_without_restarting_hermes(tmp_path, mo
 
     assert store.load().panel_opacity == 35
     assert not hasattr(hermes, "applied")
+
+
+def test_shared_hermes_settings_do_not_expose_global_hermes_controls(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        DesktopPreferences(),
+        UISettingsStore(tmp_path),
+        FakeStartup(),
+        FakeHermes(),
+        lambda _: None,
+        shared_hermes=True,
+    )
+
+    assert not hasattr(dialog, "model")
+    assert not hasattr(dialog, "tools")
+
+
+def test_backend_switch_closes_modal_before_running_the_reconfigure_callback(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    dialog = SettingsDialog(
+        DesktopPreferences(),
+        UISettingsStore(tmp_path),
+        FakeStartup(),
+        FakeHermes(),
+        lambda _: None,
+        shared_hermes=True,
+        backend_reconfigure=lambda: calls.append("reconfigure"),
+    )
+
+    dialog._reconfigure_backend()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert calls == []
+    app.processEvents()
+    assert calls == ["reconfigure"]
+
+
+def test_isolated_hermes_settings_also_expose_backend_switching(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    dialog = SettingsDialog(
+        DesktopPreferences(),
+        UISettingsStore(tmp_path),
+        FakeStartup(),
+        FakeHermes(),
+        lambda _: None,
+        shared_hermes=False,
+        backend_reconfigure=lambda: calls.append("reconfigure"),
+    )
+
+    assert any(button.text() == "切换或重新检测 Hermes" for button in dialog.findChildren(QPushButton))
+    dialog._reconfigure_backend()
+    app.processEvents()
+    assert calls == ["reconfigure"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -79,6 +80,9 @@ class SettingsDialog(QDialog):
         preview: Callable[[DesktopPreferences], None],
         parent: QWidget | None = None,
         onboard: Callable[[], None] | None = None,
+        shared_hermes: bool = False,
+        backend_reconfigure: Callable[[], None] | None = None,
+        backend_status: str = "",
     ) -> None:
         super().__init__(parent)
         self._initial = preferences
@@ -87,6 +91,9 @@ class SettingsDialog(QDialog):
         self._hermes = hermes
         self._preview = preview
         self._onboard = onboard
+        self._shared_hermes = shared_hermes
+        self._backend_reconfigure = backend_reconfigure
+        self._backend_status = backend_status
         self._snapshot = self._read_hermes()
         self.setWindowTitle("爱弥斯设置")
         self.setModal(True)
@@ -136,7 +143,11 @@ class SettingsDialog(QDialog):
         save_desktop.clicked.connect(self._save_desktop)
         apply_button = QPushButton("应用 Hermes 并重启", self)
         apply_button.setObjectName("applyButton")
-        apply_button.clicked.connect(self._apply_hermes)
+        if self._shared_hermes:
+            apply_button.setText("切换 Hermes 后端")
+            apply_button.clicked.connect(self._reconfigure_backend)
+        else:
+            apply_button.clicked.connect(self._apply_hermes)
         actions.addWidget(cancel)
         actions.addWidget(save_desktop)
         actions.addWidget(apply_button)
@@ -173,13 +184,46 @@ class SettingsDialog(QDialog):
         self.always_top.setChecked(self._initial.always_on_top)
         self.launch_login = QCheckBox("登录 Windows 时启动桌宠", card)
         self.launch_login.setChecked(self._startup.is_enabled() or self._initial.launch_at_login)
+        self.close_to_tray = QCheckBox("关闭窗口时隐藏到系统托盘", card)
+        self.close_to_tray.setChecked(self._initial.close_to_tray)
+        self.proactive = QCheckBox("允许适度主动陪伴（每天最多 3 次）", card)
+        self.proactive.setChecked(self._initial.proactive_enabled)
+        self.auto_game = QCheckBox("自动检测全屏应用并降低层级", card)
+        self.auto_game.setChecked(self._initial.auto_game_mode)
+        self.do_not_disturb = QCheckBox("勿扰模式（完全静默）", card)
+        self.do_not_disturb.setChecked(self._initial.do_not_disturb)
+        quiet_row = QHBoxLayout()
+        quiet_row.addWidget(QLabel("安静时段", card))
+        self.quiet_start = QSpinBox(card)
+        self.quiet_start.setRange(0, 23)
+        self.quiet_start.setValue(self._initial.quiet_start_hour)
+        self.quiet_end = QSpinBox(card)
+        self.quiet_end.setRange(0, 23)
+        self.quiet_end.setValue(self._initial.quiet_end_hour)
+        quiet_row.addWidget(self.quiet_start)
+        quiet_row.addWidget(QLabel("时 至", card))
+        quiet_row.addWidget(self.quiet_end)
+        quiet_row.addWidget(QLabel("时", card))
+        quiet_row.addStretch(1)
+        self.diagnostics_consent = QCheckBox("允许匿名崩溃报告（不含聊天、密钥或配置内容）", card)
+        self.diagnostics_consent.setChecked(self._initial.diagnostics_consent)
         self.animation_speed.value_changed.connect(self._preview_current)
         self.auto_collapse.value_changed.connect(self._preview_current)
         self.always_top.toggled.connect(self._preview_current)
+        self.close_to_tray.toggled.connect(self._preview_current)
+        self.proactive.toggled.connect(self._preview_current)
+        self.auto_game.toggled.connect(self._preview_current)
+        self.do_not_disturb.toggled.connect(self._preview_current)
         card_layout.addWidget(self.animation_speed)
         card_layout.addWidget(self.auto_collapse)
         card_layout.addWidget(self.always_top)
         card_layout.addWidget(self.launch_login)
+        card_layout.addWidget(self.close_to_tray)
+        card_layout.addWidget(self.proactive)
+        card_layout.addWidget(self.auto_game)
+        card_layout.addWidget(self.do_not_disturb)
+        card_layout.addLayout(quiet_row)
+        card_layout.addWidget(self.diagnostics_consent)
         layout.addWidget(card)
         layout.addStretch(1)
         return tab
@@ -188,6 +232,18 @@ class SettingsDialog(QDialog):
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(14, 16, 14, 14)
+        if self._shared_hermes:
+            card = self._card(
+                "本机 Hermes",
+                "爱弥斯正在使用你选择的本机 Hermes。模型、人格和工具继续由原 Hermes 管理，不会在这里被修改。\n\n状态：" + (self._backend_status or "已选择本机 Hermes"),
+            )
+            if self._backend_reconfigure is not None:
+                button = QPushButton("切换或重新检测 Hermes", card)
+                button.clicked.connect(self._reconfigure_backend)
+                card.layout().addWidget(button)
+            layout.addWidget(card)
+            layout.addStretch(1)
+            return tab
         status = "运行中" if self._snapshot.gateway_running else "未检测到运行中的 Gateway"
         card = self._card("全局 Hermes", f"Gateway：{status}。凭据继续由 Hermes 自身管理，不会在此显示。")
         card_layout = card.layout()
@@ -223,6 +279,10 @@ class SettingsDialog(QDialog):
             setup = QPushButton("重新配置模型服务", card)
             setup.clicked.connect(self._onboard)
             card_layout.addWidget(setup)
+        if self._backend_reconfigure is not None:
+            switch = QPushButton("切换或重新检测 Hermes", card)
+            switch.clicked.connect(self._reconfigure_backend)
+            card_layout.addWidget(switch)
         layout.addWidget(card)
         layout.addStretch(1)
         return tab
@@ -243,7 +303,8 @@ class SettingsDialog(QDialog):
         return card
 
     def _preferences_from_controls(self) -> DesktopPreferences:
-        return DesktopPreferences(
+        return replace(
+            self._initial,
             pet_size=self.pet_size.value,
             compact_width=self.compact_width.value,
             expanded_width=max(self.expanded_width.value, self.compact_width.value),
@@ -254,6 +315,13 @@ class SettingsDialog(QDialog):
             auto_collapse_seconds=self.auto_collapse.value,
             always_on_top=self.always_top.isChecked(),
             launch_at_login=self.launch_login.isChecked(),
+            close_to_tray=self.close_to_tray.isChecked(),
+            proactive_enabled=self.proactive.isChecked(),
+            quiet_start_hour=self.quiet_start.value(),
+            quiet_end_hour=self.quiet_end.value(),
+            auto_game_mode=self.auto_game.isChecked(),
+            do_not_disturb=self.do_not_disturb.isChecked(),
+            diagnostics_consent=self.diagnostics_consent.isChecked(),
         )
 
     def _preview_current(self, *_: object) -> None:
@@ -306,6 +374,13 @@ class SettingsDialog(QDialog):
         self._preview(preferences)
         QMessageBox.information(self, "Hermes 设置已应用", "桌宠设置已保存，Hermes Gateway 正在重启并会自动重连。")
         self.accept()
+
+    def _reconfigure_backend(self) -> None:
+        # End this modal loop first.  Showing an application-level message
+        # while this dialog is still modal puts the message behind it on Windows.
+        self.accept()
+        if self._backend_reconfigure is not None:
+            QTimer.singleShot(0, self._backend_reconfigure)
 
     def reject(self) -> None:
         self._preview(self._initial)

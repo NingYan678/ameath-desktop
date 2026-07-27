@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtWebSockets import QWebSocket
 
 from .config import Settings
+from .runtime_descriptor import read_runtime_descriptor
 
 
 class HermesDesktopClient(QObject):
@@ -33,12 +34,21 @@ class HermesDesktopClient(QObject):
         self._retry_timer.timeout.connect(self._connect_if_possible)
 
     def start(self) -> None:
-        self._retry_timer.start()
+        if not self._retry_timer.isActive():
+            self._retry_timer.start()
+        self.retry_now()
+
+    def retry_now(self) -> None:
+        self._endpoint = ""
         self._connect_if_possible()
 
     def close(self) -> None:
         self._retry_timer.stop()
         self._socket.close()
+
+    @property
+    def is_connected(self) -> bool:
+        return self._socket.isValid()
 
     def send_user_message(self, text: str) -> bool:
         return self._send({"type": "user_message", "text": text})
@@ -76,18 +86,8 @@ class HermesDesktopClient(QObject):
             self._socket.open(url)
 
     def _read_runtime(self) -> tuple[int, str] | None:
-        try:
-            payload = json.loads(self._runtime_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(payload, dict) or payload.get("state") != "ready":
-            return None
-        port, token = payload.get("port"), payload.get("token")
-        if not isinstance(port, int) or not 1 <= port <= 65535:
-            return None
-        if not isinstance(token, str) or len(token) < 24:
-            return None
-        return port, token
+        descriptor = read_runtime_descriptor(self._runtime_path)
+        return (descriptor.port, descriptor.token) if descriptor is not None else None
 
     def _on_connected(self) -> None:
         self.connected.emit()

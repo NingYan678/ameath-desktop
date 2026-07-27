@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from .storage import atomic_write_json
 
 
 @dataclass(frozen=True)
 class DesktopPreferences:
+    schema_version: int = 3
     pet_size: int = 200
     compact_width: int = 360
     expanded_width: int = 520
@@ -22,6 +23,18 @@ class DesktopPreferences:
     auto_collapse_seconds: int = 30
     always_on_top: bool = True
     launch_at_login: bool = False
+    close_to_tray: bool = True
+    proactive_enabled: bool = True
+    proactive_daily_limit: int = 3
+    quiet_start_hour: int = 23
+    quiet_end_hour: int = 8
+    auto_game_mode: bool = True
+    do_not_disturb: bool = False
+    update_channel: str = "stable"
+    diagnostics_consent: bool = False
+    window_screen: str = ""
+    window_x: int = -1
+    window_y: int = -1
 
 
 class UISettingsStore:
@@ -38,6 +51,15 @@ class UISettingsStore:
         if not isinstance(payload, dict):
             return DesktopPreferences()
         defaults = DesktopPreferences()
+        try:
+            schema_version = int(payload.get("schema_version", 1))
+        except (TypeError, ValueError):
+            schema_version = 1
+        # v2 accidentally persisted manual game mode as a disabled topmost
+        # preference.  Restore the default once; users can still disable it.
+        always_on_top = bool(payload.get("always_on_top", defaults.always_on_top))
+        if schema_version <= 2 and not always_on_top:
+            always_on_top = True
         return DesktopPreferences(
             pet_size=self._bounded_int(payload.get("pet_size"), defaults.pet_size, 120, 360),
             compact_width=self._bounded_int(payload.get("compact_width"), defaults.compact_width, 300, 560),
@@ -47,23 +69,24 @@ class UISettingsStore:
             font_scale=self._bounded_int(payload.get("font_scale"), defaults.font_scale, 80, 150),
             animation_speed=self._bounded_int(payload.get("animation_speed"), defaults.animation_speed, 50, 200),
             auto_collapse_seconds=self._bounded_int(payload.get("auto_collapse_seconds"), defaults.auto_collapse_seconds, 5, 180),
-            always_on_top=bool(payload.get("always_on_top", defaults.always_on_top)),
+            always_on_top=always_on_top,
             launch_at_login=bool(payload.get("launch_at_login", defaults.launch_at_login)),
+            close_to_tray=bool(payload.get("close_to_tray", defaults.close_to_tray)),
+            proactive_enabled=bool(payload.get("proactive_enabled", defaults.proactive_enabled)),
+            proactive_daily_limit=self._bounded_int(payload.get("proactive_daily_limit"), defaults.proactive_daily_limit, 0, 10),
+            quiet_start_hour=self._bounded_int(payload.get("quiet_start_hour"), defaults.quiet_start_hour, 0, 23),
+            quiet_end_hour=self._bounded_int(payload.get("quiet_end_hour"), defaults.quiet_end_hour, 0, 23),
+            auto_game_mode=bool(payload.get("auto_game_mode", defaults.auto_game_mode)),
+            do_not_disturb=bool(payload.get("do_not_disturb", defaults.do_not_disturb)),
+            update_channel=str(payload.get("update_channel", defaults.update_channel)) if payload.get("update_channel") in {"stable", "beta"} else defaults.update_channel,
+            diagnostics_consent=bool(payload.get("diagnostics_consent", defaults.diagnostics_consent)),
+            window_screen=str(payload.get("window_screen", defaults.window_screen)),
+            window_x=self._bounded_int(payload.get("window_x"), defaults.window_x, -1, 32_000),
+            window_y=self._bounded_int(payload.get("window_y"), defaults.window_y, -1, 32_000),
         )
 
     def save(self, preferences: DesktopPreferences) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix="ui_settings_", suffix=".json", dir=self.path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(asdict(preferences), output, ensure_ascii=False, indent=2)
-                output.write("\n")
-            os.replace(temporary, self.path)
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
+        atomic_write_json(self.path, asdict(preferences))
 
     @staticmethod
     def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:

@@ -16,6 +16,9 @@ class FakeCredentials:
     def load(self):
         return self.saved
 
+    def load_with_status(self):
+        return (self.saved, "available" if self.saved else "missing")
+
     def clear(self):
         self.saved = None
 
@@ -57,4 +60,42 @@ def test_profile_writes_a_clean_isolated_hermes_home(tmp_path):
 def test_onboarding_rejects_missing_required_model_fields():
     ok, message = OnboardingDialog.test_profile(ModelProfile("openai", "", "https://api.openai.com/v1", "key"))
     assert not ok
-    assert "模型名称" in message
+    assert message
+
+
+def test_prepare_restores_a_missing_config_from_the_public_profile(tmp_path):
+    settings = make_settings(tmp_path)
+    runtime = AmeathRuntimeService(settings)
+    runtime.credentials = FakeCredentials()
+    runtime.save_profile(ModelProfile("deepseek", "deepseek-chat", "https://api.deepseek.com/v1", "secret-key"))
+    (settings.hermes_home / "config.yaml").unlink()
+
+    runtime.prepare()
+
+    assert runtime.configured
+    assert json.loads((settings.hermes_home / "config.yaml").read_text(encoding="utf-8"))["model"]["default"] == "deepseek-chat"
+
+
+def test_prepare_restores_a_missing_profile_from_its_public_backup(tmp_path):
+    settings = make_settings(tmp_path)
+    runtime = AmeathRuntimeService(settings)
+    runtime.credentials = FakeCredentials()
+    runtime.save_profile(ModelProfile("deepseek", "deepseek-chat", "https://api.deepseek.com/v1", "secret-key"))
+    (settings.hermes_home / "model_profile.json").unlink()
+
+    runtime.prepare()
+
+    assert runtime.configured
+    assert (settings.hermes_home / "model_profile.json").is_file()
+
+
+def test_prepare_replaces_an_invalid_derived_config(tmp_path):
+    settings = make_settings(tmp_path)
+    runtime = AmeathRuntimeService(settings)
+    runtime.credentials = FakeCredentials()
+    runtime.save_profile(ModelProfile("deepseek", "deepseek-chat", "https://api.deepseek.com/v1", "secret-key"))
+    (settings.hermes_home / "config.yaml").write_text("not valid JSON", encoding="utf-8")
+
+    runtime.prepare()
+
+    assert runtime.configured

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -19,6 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build" / "installer"
 HERMES_COMMIT = "8fc278207b0f5b25e567966f9615e1b1737f62af"
+APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
+    raise RuntimeError("VERSION must contain a valid SemVer value")
 SKIP_SOURCE_NAMES = {".git", ".github", ".plans", "tests", "tests-js", "docs", "website", "node_modules", "venv", "__pycache__"}
 
 
@@ -63,6 +67,7 @@ def build_frontend(stage: Path) -> None:
         "--paths", str(ROOT / "src"),
         "--add-data", f"{ROOT / 'assets'}{separator}assets",
         "--add-data", f"{ROOT / 'hermes_platform'}{separator}hermes_platform",
+        "--add-data", f"{ROOT / 'VERSION'}{separator}.",
         "--distpath", str(dist), "--workpath", str(work), "--specpath", str(BUILD), str(ROOT / "packaging" / "ameath_entry.py"),
     )
     shutil.copytree(dist / "Ameath", app)
@@ -118,7 +123,7 @@ def compile_installer(mode: str, stage: Path) -> None:
         raise RuntimeError("Inno Setup 6 is required. Install it, then rerun this build command.")
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)
-    run(iscc, f"/DBuildMode={mode}", f"/DStageDir={stage}", f"/O{output}", str(ROOT / "packaging" / "Ameath.iss"))
+    run(iscc, f"/DAppVersion={APP_VERSION}", f"/DBuildMode={mode}", f"/DStageDir={stage}", f"/O{output}", str(ROOT / "packaging" / "Ameath.iss"))
 
 
 def main() -> int:
