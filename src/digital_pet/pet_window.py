@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QMovie, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QMovie, QPainter, QPen
 from PySide6.QtWidgets import QInputDialog, QLabel, QWidget
 
 from .ameath_runtime import AmeathRuntimeService
@@ -103,6 +103,7 @@ class PetWindow(QWidget):
     ) -> None:
         super().__init__()
         self.settings = settings
+        self.setWindowIcon(QIcon(str(settings.asset_root / "gifs" / "ameath.ico")))
         self._settings_store = UISettingsStore(settings.data_root)
         self.preferences = self._settings_store.load()
         self._pet_state = PetStateEngine(PetStateStore(settings.data_root), self.preferences)

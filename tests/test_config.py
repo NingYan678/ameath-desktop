@@ -39,3 +39,11 @@ def test_packaged_copy_ignores_legacy_hermes_environment(monkeypatch, tmp_path):
     assert settings.hermes_home != Path(r"D:\hermes")
     assert settings.hermes_home == settings.data_root / "hermes"
     assert settings.hermes_cli_python != Path(r"D:\hermes\python.exe")
+
+
+def test_development_startup_uses_the_hidden_vbs_launcher(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "is_packaged", lambda: False)
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    settings = Settings(tmp_path, tmp_path, "", "", "", 30, Path("missing"), Path("missing"))
+
+    assert settings.launch_command == f'wscript.exe //B "{tmp_path / "run.vbs"}"'

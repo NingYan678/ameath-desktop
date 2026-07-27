@@ -74,7 +74,7 @@ class Settings:
     def launch_command(self) -> str:
         if is_packaged():
             return f'"{Path(sys.executable).resolve()}"'
-        return f'cmd.exe /c "{PROJECT_ROOT / "run.bat"}"'
+        return f'wscript.exe //B "{PROJECT_ROOT / "run.vbs"}"'
 
     @property
     def resources_root(self) -> Path:
