@@ -12,9 +12,11 @@ from PySide6.QtWidgets import QInputDialog, QLabel, QWidget
 
 from .ameath_runtime import AmeathRuntimeService
 from .activity_monitor import ActivityMonitor
+from .animation_catalog import ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS
 from .butler_protocol import BubblePriority, BubbleScheduler, PET_STATE_ANIMATIONS
-from .config import PROJECT_ROOT, Settings
+from .config import Settings
 from .conversation_panel import ConversationPanel
+from .companion_behavior import CompanionBehavior
 from .hermes_desktop_client import HermesDesktopClient
 from .hermes_settings import HermesSettingsService
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
@@ -23,27 +25,6 @@ from .runtime_supervisor import RuntimeSupervisor
 from .settings_dialog import SettingsDialog
 
 
-ANIMATIONS = {
-    "idle_soft": "screen3.gif", "idle_alert": "screen1.gif", "idle_happy": "sd_idle_happy.gif", "idle_sleepy": "screen6.gif",
-    "move": "sd_move.gif", "drag": "sd_drag.gif", "notice": "screen1.gif", "sad": "screen2.gif",
-    "attention": "screen3.gif", "thinking": "screen4.gif", "busy": "screen5.gif", "rest": "screen6.gif",
-    "question": "screen7.gif", "music": "ameath.gif",
-    "blink": "sd_blink.gif", "look_left": "sd_look_left.gif", "look_right": "sd_look_right.gif",
-    "breathe": "sd_breathe.gif", "sway": "sd_sway.gif", "float": "sd_float.gif",
-    "greeting": "sd_greeting.gif", "curious_peek": "sd_curious_peek.gif", "surprised": "sd_surprised.gif",
-    "sleepy_stretch": "sd_sleepy_stretch.gif",
-    "paper_plane": "sd_paper_plane.gif", "sparkle_happy": "sd_sparkle_happy.gif",
-}
-ANIMATION_LABELS = {
-    "idle_soft": "待机：眨眼", "idle_alert": "待机：注意", "idle_happy": "待机：微笑", "idle_sleepy": "待机：困倦",
-    "move": "移动过渡", "drag": "拖动反馈", "notice": "关注你", "sad": "难过", "attention": "回应你",
-    "thinking": "思考", "busy": "专注", "rest": "休息", "question": "等待指令", "music": "小小音乐会",
-    "blink": "眨眼", "look_left": "左顾", "look_right": "右盼", "breathe": "轻呼吸", "sway": "轻摇摆", "float": "漂浮",
-    "greeting": "歪头招呼", "curious_peek": "探头", "surprised": "惊讶", "sleepy_stretch": "困倦伸展",
-    "paper_plane": "纸飞机", "sparkle_happy": "闪光开心",
-}
-IDLE_ANIMATIONS = ("idle_soft", "idle_alert", "idle_happy", "idle_sleepy")
-MICRO_MOTIONS = ("blink", "look_left", "look_right", "breathe", "sway", "float", "greeting", "curious_peek", "surprised", "sleepy_stretch", "paper_plane", "sparkle_happy")
 LOGGER = logging.getLogger("digital_pet.runtime")
 class NativePulse(QWidget):
     """A small local animation for Hermes-originated notifications."""
@@ -119,7 +100,7 @@ class PetWindow(QWidget):
         self._close_handler: Callable[[], bool] | None = None
         self._auto_game_mode = False
         self._manual_game_mode = False
-        self._hermes_settings = HermesSettingsService(
+        self._hermes_settings = None if shared_hermes else HermesSettingsService(
             settings.hermes_home,
             python=settings.hermes_cli_python,
             source=settings.hermes_source,
@@ -133,8 +114,7 @@ class PetWindow(QWidget):
         self._pending_action: dict[str, Any] | None = None
         self._current_animation = "idle_soft"
         self._paused = False
-        self._recent_motion_ids: list[str] = []
-        self._recent_interaction_ids: list[str] = []
+        self._behavior = CompanionBehavior()
         self._gateway = HermesDesktopClient(settings, self)
         self._gateway.connected.connect(self._on_gateway_connected)
         self._gateway.disconnected.connect(self._on_gateway_disconnected)
@@ -325,9 +305,7 @@ class PetWindow(QWidget):
         if blocked:
             self._motion_timer.start(5_000)
             return
-        available = [name for name in MICRO_MOTIONS if name not in self._recent_motion_ids]
-        motion = random.choice(available or list(MICRO_MOTIONS))
-        self._recent_motion_ids = (*self._recent_motion_ids, motion)[-4:]
+        motion = self._behavior.choose_motion(MICRO_MOTIONS)
         self._load_animation(motion)
         self._settle_timer.start(1_900)
         self._schedule_micro_motion()
@@ -606,9 +584,7 @@ class PetWindow(QWidget):
     def _trigger_interaction(self, catalogue: tuple[CompanionInteraction, ...]) -> None:
         if self._pending_action is not None or self._paused:
             return
-        choices = [item for item in catalogue if item.event_id not in self._recent_interaction_ids]
-        item = random.choice(choices or list(catalogue))
-        self._recent_interaction_ids = (*self._recent_interaction_ids, item.event_id)[-4:]
+        item = self._behavior.choose_interaction(catalogue)
         self._react(item.animation, item.text, item.duration_ms)
 
     def toggle_pause(self) -> None:

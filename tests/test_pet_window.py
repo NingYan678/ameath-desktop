@@ -58,7 +58,7 @@ def test_toggle_proactive_persists_and_emits_current_state(tmp_path):
 
 
 def test_manual_proactive_trigger_shows_a_local_companion_event(tmp_path):
-    app = QApplication.instance() or QApplication([])
+    _ = QApplication.instance() or QApplication([])
     window = PetWindow(make_settings(tmp_path))
 
     assert window.trigger_proactive_now()
@@ -79,14 +79,14 @@ def test_rest_motion_does_not_replace_the_last_companion_status(tmp_path):
 
 
 def test_micro_motion_pool_avoids_recent_repeats(tmp_path):
-    app = QApplication.instance() or QApplication([])
+    _ = QApplication.instance() or QApplication([])
     window = PetWindow(make_settings(tmp_path))
     window._settle_timer.stop()
 
     window._trigger_micro_motion()
-    first = window._recent_motion_ids[-1]
+    first = window._behavior.recent_motion_ids[-1]
     window._settle_timer.stop()
     window._trigger_micro_motion()
 
-    assert window._recent_motion_ids[-1] != first
+    assert window._behavior.recent_motion_ids[-1] != first
     window.close()

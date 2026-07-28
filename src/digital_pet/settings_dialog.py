@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -20,7 +19,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -29,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from .hermes_settings import MANAGED_TOOLSETS, HermesSettingsService, HermesSettingsSnapshot
+from .background_task import FunctionTask, start_task
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
 
 
@@ -76,7 +75,7 @@ class SettingsDialog(QDialog):
         preferences: DesktopPreferences,
         store: UISettingsStore,
         startup: StartupManager,
-        hermes: HermesSettingsService,
+        hermes: HermesSettingsService | None,
         preview: Callable[[DesktopPreferences], None],
         parent: QWidget | None = None,
         onboard: Callable[[], None] | None = None,
@@ -94,7 +93,8 @@ class SettingsDialog(QDialog):
         self._shared_hermes = shared_hermes
         self._backend_reconfigure = backend_reconfigure
         self._backend_status = backend_status
-        self._snapshot = self._read_hermes()
+        self._snapshot = HermesSettingsSnapshot("", "auto", "none", (), (), False)
+        self._hermes_task: FunctionTask | None = None
         self.setWindowTitle("爱弥斯设置")
         self.setModal(True)
         self.setMinimumSize(570, 560)
@@ -115,6 +115,8 @@ class SettingsDialog(QDialog):
             "QPushButton#applyButton:hover { background: #fff0f7; }"
         )
         self._build_ui()
+        if self._hermes is not None and not self._shared_hermes:
+            QTimer.singleShot(0, self._load_hermes_async)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -141,16 +143,17 @@ class SettingsDialog(QDialog):
         cancel.clicked.connect(self.reject)
         save_desktop = QPushButton("保存桌宠设置", self)
         save_desktop.clicked.connect(self._save_desktop)
-        apply_button = QPushButton("应用 Hermes 并重启", self)
-        apply_button.setObjectName("applyButton")
+        self.apply_button = QPushButton("应用 Hermes 并重启", self)
+        self.apply_button.setObjectName("applyButton")
         if self._shared_hermes:
-            apply_button.setText("切换 Hermes 后端")
-            apply_button.clicked.connect(self._reconfigure_backend)
+            self.apply_button.setText("切换 Hermes 后端")
+            self.apply_button.clicked.connect(self._reconfigure_backend)
         else:
-            apply_button.clicked.connect(self._apply_hermes)
+            self.apply_button.setEnabled(False)
+            self.apply_button.clicked.connect(self._apply_hermes)
         actions.addWidget(cancel)
         actions.addWidget(save_desktop)
-        actions.addWidget(apply_button)
+        actions.addWidget(self.apply_button)
         layout.addLayout(actions)
 
     def _appearance_tab(self) -> QWidget:
@@ -257,7 +260,9 @@ class SettingsDialog(QDialog):
             layout.addStretch(1)
             return tab
         status = "运行中" if self._snapshot.gateway_running else "未检测到运行中的 Gateway"
-        card = self._card("全局 Hermes", f"Gateway：{status}。凭据继续由 Hermes 自身管理，不会在此显示。")
+        card = self._card("爱弥斯 Hermes", f"Gateway：{status}。只管理爱弥斯桌面通道，不影响其他平台。")
+        self._hermes_card = card
+        card.setEnabled(False)
         card_layout = card.layout()
         form = QFormLayout()
         self.model = QLineEdit(self._snapshot.model, card)
@@ -373,20 +378,24 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, "桌宠设置已保存", "外观和桌宠行为已立即生效，无需重启 Hermes。")
 
     def _apply_hermes(self) -> None:
+        if self._hermes is None or self._hermes_task is not None:
+            return
         try:
             preferences = self._persist_desktop()
-            self._hermes.apply_and_restart(
+        except OSError as exc:
+            QMessageBox.warning(self, "桌宠设置未保存", str(exc))
+            return
+        self.apply_button.setEnabled(False)
+        self.apply_button.setText("正在应用…")
+        task = start_task(lambda: self._hermes.apply_and_restart(
                 model=self.model.text(),
                 provider=self.provider.text(),
                 personality=self.personality.currentText(),
                 tools=self._selected_tools(),
-            )
-        except (OSError, RuntimeError) as exc:
-            QMessageBox.warning(self, "Hermes 设置未完全应用", f"桌宠设置已保存。\n\n{exc}")
-            return
-        self._preview(preferences)
-        QMessageBox.information(self, "Hermes 设置已应用", "桌宠设置已保存，Hermes Gateway 正在重启并会自动重连。")
-        self.accept()
+            ))
+        self._hermes_task = task
+        task.signals.succeeded.connect(lambda _: self._hermes_applied(preferences))
+        task.signals.failed.connect(self._hermes_failed)
 
     def _reconfigure_backend(self) -> None:
         # End this modal loop first.  Showing an application-level message
@@ -399,8 +408,42 @@ class SettingsDialog(QDialog):
         self._preview(self._initial)
         super().reject()
 
-    def _read_hermes(self) -> HermesSettingsSnapshot:
-        try:
-            return self._hermes.read()
-        except RuntimeError:
-            return HermesSettingsSnapshot("", "auto", "none", (), (), False)
+    def _load_hermes_async(self) -> None:
+        if self._hermes is None or self._hermes_task is not None:
+            return
+        task = start_task(self._hermes.read)
+        self._hermes_task = task
+        task.signals.succeeded.connect(self._hermes_loaded)
+        task.signals.failed.connect(self._hermes_load_failed)
+
+    def _hermes_loaded(self, snapshot: object) -> None:
+        self._snapshot = snapshot  # type: ignore[assignment]
+        self.model.setText(self._snapshot.model)
+        self.provider.setText(self._snapshot.provider)
+        self.personality.clear()
+        self.personality.addItems(["none", *self._snapshot.personalities])
+        self.personality.setCurrentIndex(max(0, self.personality.findText(self._snapshot.active_personality)))
+        enabled_tools = set(self._snapshot.enabled_tools)
+        for index in range(self.tools.count()):
+            self.tools.item(index).setCheckState(Qt.Checked if self.tools.item(index).text() in enabled_tools else Qt.Unchecked)
+        self._hermes_card.setEnabled(True)
+        self._hermes_task = None
+        self.apply_button.setEnabled(True)
+
+    def _hermes_load_failed(self, message: str) -> None:
+        self._hermes_task = None
+        self._hermes_card.setEnabled(False)
+        self.apply_button.setText("Hermes 暂不可用")
+        QMessageBox.warning(self, "无法读取 Hermes 设置", message)
+
+    def _hermes_applied(self, preferences: DesktopPreferences) -> None:
+        self._hermes_task = None
+        self._preview(preferences)
+        QMessageBox.information(self, "Hermes 设置已应用", "桌宠设置已保存，Hermes Gateway 正在重启并会自动重连。")
+        self.accept()
+
+    def _hermes_failed(self, message: str) -> None:
+        self._hermes_task = None
+        self.apply_button.setText("应用 Hermes 并重启")
+        self.apply_button.setEnabled(True)
+        QMessageBox.warning(self, "Hermes 设置未完全应用", f"桌宠设置已保存。\n\n{message}")

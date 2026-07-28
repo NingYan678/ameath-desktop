@@ -39,5 +39,11 @@ class DiagnosticsService:
 
     @staticmethod
     def redact(text: str) -> str:
-        text = re.sub(r"(?i)(api[_-]?key|token|authorization|password)\s*[:=]\s*[^\s,]+", r"\1=<redacted>", text)
+        text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+", r"\1<redacted>", text)
+        text = re.sub(
+            r"(?i)([\"']?(?:api[_-]?key|token|authorization|password|secret)[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,}\]]+)",
+            r"\1<redacted>",
+            text,
+        )
+        text = re.sub(r"(?i)([?&](?:api[_-]?key|token|password|secret)=)[^&#\s]+", r"\1<redacted>", text)
         return re.sub(r"[A-Za-z]:\\(?:[^\\\s]+\\)*[^\\\s]+", "<local-path>", text)

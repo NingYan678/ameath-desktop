@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -19,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .ameath_runtime import AmeathRuntimeService, ModelProfile, PROVIDER_DEFAULTS
-from .credentials import CredentialError
+from .background_task import FunctionTask, start_task
 
 
 class OnboardingDialog(QDialog):
@@ -35,6 +34,7 @@ class OnboardingDialog(QDialog):
     def __init__(self, runtime: AmeathRuntimeService, parent=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(parent)
         self.runtime = runtime
+        self._task: FunctionTask | None = None
         self.setWindowTitle("欢迎使用爱弥斯")
         self.setModal(True)
         self.setMinimumWidth(470)
@@ -140,21 +140,51 @@ class OnboardingDialog(QDialog):
         return False, f"服务返回了 {status_code}，请检查地址和模型服务状态。"
 
     def _test_connection(self) -> None:
-        valid, message = self.test_profile(self.profile())
-        self.status.setText(message)
-        self.status.setStyleSheet("color: #a7eff7;" if valid else "color: #ffc0d8;")
+        profile = self.profile()
+        self._run_task(lambda: self.test_profile(profile), self._show_connection_result)
 
     def _finish(self) -> None:
         profile = self.profile()
-        valid, message = self.test_profile(profile)
-        if not valid:
-            QMessageBox.warning(self, "暂时无法完成设置", message)
-            return
-        try:
+        def finish() -> tuple[bool, str]:
+            valid, message = self.test_profile(profile)
+            if not valid:
+                return False, message
             self.runtime.save_profile(profile)
             if not self.runtime.start_gateway():
-                raise RuntimeError("爱弥斯内核尚未准备好，请重新安装或检查运行环境。")
-        except (CredentialError, OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.critical(self, "启动失败", str(exc))
+                return False, "爱弥斯内核尚未准备好，请重新安装或检查运行环境。"
+            return True, "模型服务已保存，正在连接 Hermes。"
+        self._run_task(finish, self._finish_result)
+
+    def _run_task(self, operation, on_success) -> None:  # type: ignore[no-untyped-def]
+        if self._task is not None:
             return
-        self.accept()
+        self.test_button.setEnabled(False)
+        self.finish_button.setEnabled(False)
+        self.status.setText("正在处理，请稍候…")
+        self.status.setStyleSheet("color: #d9cce8;")
+        task = start_task(operation)
+        self._task = task
+        task.signals.succeeded.connect(on_success)
+        task.signals.failed.connect(self._task_failed)
+        task.signals.finished.connect(self._task_finished)
+
+    def _show_connection_result(self, result: object) -> None:
+        valid, message = result  # type: ignore[misc]
+        self.status.setText(message)
+        self.status.setStyleSheet("color: #a7eff7;" if valid else "color: #ffc0d8;")
+
+    def _finish_result(self, result: object) -> None:
+        valid, message = result  # type: ignore[misc]
+        if valid:
+            self.status.setText(message)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "暂时无法完成设置", message)
+
+    def _task_failed(self, message: str) -> None:
+        QMessageBox.critical(self, "启动失败", message)
+
+    def _task_finished(self) -> None:
+        self._task = None
+        self.test_button.setEnabled(True)
+        self.finish_button.setEnabled(True)
