@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -254,7 +255,40 @@ class AmeathRuntimeService:
         source_base = self.settings.resources_root if is_packaged() else self.settings.install_root
         source = source_base / "hermes_platform" / "ameath_desktop"
         target = self.settings.hermes_home / "plugins" / "platforms" / "ameath_desktop"
-        if not source.is_dir() or target.is_dir():
+        if not source.is_dir() or (target.is_dir() and _same_tree(source, target)):
             return
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, target)
+        staged = target.parent / f".{target.name}.{uuid.uuid4().hex}.new"
+        backup = target.parent / f".{target.name}.{uuid.uuid4().hex}.backup"
+        replaced = False
+        try:
+            shutil.copytree(source, staged)
+            if target.exists():
+                target.replace(backup)
+                replaced = True
+            staged.replace(target)
+        except Exception:
+            if target.exists() and replaced:
+                shutil.rmtree(target, ignore_errors=True)
+            if replaced and backup.exists():
+                backup.replace(target)
+            raise
+        finally:
+            if staged.exists():
+                shutil.rmtree(staged, ignore_errors=True)
+            if backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+
+
+def _same_tree(left: Path, right: Path) -> bool:
+    """Compare a plugin tree by relative paths and file contents."""
+    if not right.is_dir():
+        return False
+    left_files = {path.relative_to(left) for path in left.rglob("*") if path.is_file()}
+    right_files = {path.relative_to(right) for path in right.rglob("*") if path.is_file()}
+    if left_files != right_files:
+        return False
+    for relative in left_files:
+        if left.joinpath(relative).read_bytes() != right.joinpath(relative).read_bytes():
+            return False
+    return True

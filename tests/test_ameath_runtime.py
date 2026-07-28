@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+import digital_pet.ameath_runtime as ameath_runtime
 from digital_pet.ameath_runtime import AmeathRuntimeService, ModelProfile
 from digital_pet.config import Settings
 from digital_pet.onboarding import OnboardingDialog
@@ -51,6 +54,47 @@ def test_profile_writes_a_clean_isolated_hermes_home(tmp_path):
     assert "secret-key" not in (settings.hermes_home / "config.yaml").read_text(encoding="utf-8")
     assert runtime.credentials.saved == ("deepseek", "secret-key")
     assert (settings.hermes_home / "plugins" / "platforms" / "ameath_desktop" / "plugin.yaml").is_file()
+
+
+def test_prepare_updates_an_existing_desktop_plugin_atomically(tmp_path):
+    settings = make_settings(tmp_path)
+    plugin = settings.install_root / "hermes_platform" / "ameath_desktop"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (plugin / "adapter.py").write_text("new", encoding="utf-8")
+    runtime = AmeathRuntimeService(settings)
+    runtime.prepare()
+    target = settings.hermes_home / "plugins" / "platforms" / "ameath_desktop"
+    (plugin / "adapter.py").write_text("newer", encoding="utf-8")
+
+    runtime.prepare()
+
+    assert (target / "adapter.py").read_text(encoding="utf-8") == "newer"
+    assert not list(target.parent.glob(".ameath_desktop.*"))
+
+
+def test_prepare_keeps_the_existing_plugin_when_upgrade_copy_fails(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    plugin = settings.install_root / "hermes_platform" / "ameath_desktop"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (plugin / "adapter.py").write_text("old", encoding="utf-8")
+    runtime = AmeathRuntimeService(settings)
+    runtime.prepare()
+    target = settings.hermes_home / "plugins" / "platforms" / "ameath_desktop"
+    (plugin / "adapter.py").write_text("new", encoding="utf-8")
+
+    def fail_copy(source, destination, *args, **kwargs):
+        if Path(source) == plugin:
+            raise OSError("copy failed")
+        return ameath_runtime.shutil.copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(ameath_runtime.shutil, "copytree", fail_copy)
+
+    with pytest.raises(OSError, match="copy failed"):
+        runtime.prepare()
+
+    assert (target / "adapter.py").read_text(encoding="utf-8") == "old"
 
 
 def test_onboarding_rejects_missing_required_model_fields():
