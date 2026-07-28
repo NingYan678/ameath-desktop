@@ -10,6 +10,10 @@ def test_ui_settings_store_falls_back_safely_for_invalid_data(tmp_path):
     assert store.load() == DesktopPreferences()
 
 
+def test_new_preferences_default_to_a_three_to_five_minute_companion_cadence():
+    assert DesktopPreferences().proactive_max_interval_minutes == 5
+
+
 def test_ui_settings_store_clamps_and_persists_values(tmp_path):
     store = UISettingsStore(tmp_path)
     store.path.write_text(json.dumps({"schema_version": 4, "pet_size": 999, "panel_opacity": 1, "always_on_top": False, "proactive_max_interval_minutes": 500}), encoding="utf-8")
@@ -41,4 +45,4 @@ def test_v3_daily_cap_setting_migrates_to_the_new_interval_default(tmp_path):
 
     loaded = store.load()
 
-    assert loaded.proactive_max_interval_minutes == 45
+    assert loaded.proactive_max_interval_minutes == 5

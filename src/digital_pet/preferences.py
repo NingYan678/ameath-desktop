@@ -25,7 +25,7 @@ class DesktopPreferences:
     launch_at_login: bool = False
     close_to_tray: bool = True
     proactive_enabled: bool = True
-    proactive_max_interval_minutes: int = 45
+    proactive_max_interval_minutes: int = 5
     quiet_start_hour: int = 23
     quiet_end_hour: int = 8
     auto_game_mode: bool = True
