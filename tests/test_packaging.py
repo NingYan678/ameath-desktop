@@ -29,3 +29,18 @@ def test_release_uses_one_version_source():
     assert "#ifndef AppVersion" in installer
     assert "#ifndef AppGuid" in installer
     assert "' + '{#AppGuid}' + '}_is1'" in installer
+
+
+def test_release_build_uses_temporary_work_and_a_runtime_asset_allowlist():
+    build = (ROOT / "packaging" / "build_release.py").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    development_requirements = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+
+    assert "tempfile.mkdtemp" in build
+    assert "prepare_assets(stage)" in build
+    assert '"gifs/screen3.gif"' in build
+    assert '"gifs/idle1.gif"' not in build
+    assert "httpx" not in build
+    assert "httpx" not in requirements
+    assert "pytest" not in requirements
+    assert "pytest>=8,<9" in development_requirements

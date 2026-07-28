@@ -14,16 +14,25 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILD = ROOT / "build" / "installer"
 HERMES_COMMIT = "8fc278207b0f5b25e567966f9615e1b1737f62af"
 APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
-SKIP_SOURCE_NAMES = {".git", ".github", ".plans", "tests", "tests-js", "docs", "website", "node_modules", "venv", "__pycache__"}
+SKIP_SOURCE_NAMES = {".git", ".github", ".plans", "tests", "tests-js", "docs", "website", "node_modules", "venv", ".venv", ".cache", "build", "dist", "__pycache__"}
+ASSET_FILES = frozenset(
+    {
+        "gifs/ameath.gif", "gifs/ameath.ico",
+        "gifs/screen1.gif", "gifs/screen2.gif", "gifs/screen3.gif", "gifs/screen4.gif", "gifs/screen5.gif", "gifs/screen6.gif", "gifs/screen7.gif",
+        "gifs/sd_blink.gif", "gifs/sd_breathe.gif", "gifs/sd_curious_peek.gif", "gifs/sd_drag.gif", "gifs/sd_float.gif",
+        "gifs/sd_greeting.gif", "gifs/sd_idle_happy.gif", "gifs/sd_look_left.gif", "gifs/sd_look_right.gif", "gifs/sd_move.gif",
+        "gifs/sd_paper_plane.gif", "gifs/sd_sleepy_stretch.gif", "gifs/sd_sparkle_happy.gif", "gifs/sd_surprised.gif", "gifs/sd_sway.gif",
+    }
+)
 
 
 def run(*command: str, cwd: Path | None = None) -> None:
@@ -55,20 +64,33 @@ def ignore_source(directory: str, names: list[str]) -> set[str]:
     return {name for name in names if name in SKIP_SOURCE_NAMES or name.endswith(".pyc")}
 
 
-def build_frontend(stage: Path) -> None:
-    app, dist, work = stage / "app", BUILD / "pyinstaller", BUILD / "pyinstaller-work"
+def prepare_assets(stage: Path) -> Path:
+    source_root = ROOT / "assets" / "recovered"
+    target_root = stage / "assets" / "recovered"
+    for relative_name in ASSET_FILES:
+        source = source_root / relative_name
+        if not source.is_file():
+            raise RuntimeError(f"Required packaged asset is missing: {source}")
+        target = target_root / relative_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return stage / "assets"
+
+
+def build_frontend(stage: Path, build_root: Path) -> None:
+    app, dist, work = stage / "app", build_root / "pyinstaller", build_root / "pyinstaller-work"
     for path in (app, dist, work):
         remove_tree(path)
     separator = ";" if os.name == "nt" else ":"
     run(
         "uv", "run", "--with", "pyinstaller==6.14.2",
-        "--with", "PySide6>=6.7,<7", "--with", "httpx>=0.27,<1", "--with", "python-dotenv>=1.0,<2",
+        "--with", "PySide6>=6.7,<7", "--with", "python-dotenv>=1.0,<2",
         "pyinstaller", "--noconfirm", "--clean", "--windowed", "--name", "Ameath",
         "--paths", str(ROOT / "src"),
-        "--add-data", f"{ROOT / 'assets'}{separator}assets",
+        "--add-data", f"{prepare_assets(stage)}{separator}assets",
         "--add-data", f"{ROOT / 'hermes_platform'}{separator}hermes_platform",
         "--add-data", f"{ROOT / 'VERSION'}{separator}.",
-        "--distpath", str(dist), "--workpath", str(work), "--specpath", str(BUILD), str(ROOT / "packaging" / "ameath_entry.py"),
+        "--distpath", str(dist), "--workpath", str(work), "--specpath", str(build_root), str(ROOT / "packaging" / "ameath_entry.py"),
     )
     shutil.copytree(dist / "Ameath", app)
 
@@ -98,8 +120,8 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     return runtime
 
 
-def archive_runtime(runtime: Path) -> Path:
-    archive_base = BUILD / "Ameath-Hermes-runtime"
+def archive_runtime(runtime: Path, build_root: Path) -> Path:
+    archive_base = build_root / "Ameath-Hermes-runtime"
     archive = archive_base.with_suffix(".zip")
     archive.unlink(missing_ok=True)
     shutil.make_archive(str(archive_base), "zip", runtime.parent, runtime.name)
@@ -134,26 +156,34 @@ def main() -> int:
     parser.add_argument("--runtime-url", default="")
     parser.add_argument("--runtime-sha256", default="")
     parser.add_argument("--skip-installer", action="store_true")
+    parser.add_argument("--keep-build", action="store_true", help="keep temporary release work under build/installer for diagnosis")
     args = parser.parse_args()
     if os.name != "nt":
         raise RuntimeError("Windows is required to build Windows installers.")
     if not (args.hermes_source / "hermes_cli" / "main.py").is_file():
         raise RuntimeError("--hermes-source must point to a Hermes source checkout.")
-    modes = ("online", "offline") if args.mode == "all" else (args.mode,)
-    for mode in modes:
-        stage = BUILD / mode
-        remove_tree(stage)
-        stage.mkdir(parents=True)
-        build_frontend(stage)
-        if mode == "offline":
-            archive = archive_runtime(build_runtime(stage, args.hermes_source, args.python))
-            print(f"Offline runtime: {archive} ({sha256(archive)})")
-        else:
-            if not args.runtime_url or not args.runtime_sha256:
-                raise RuntimeError("Online builds require --runtime-url and --runtime-sha256 from the offline runtime archive.")
-            make_online_runtime(stage, args.runtime_url, args.runtime_sha256)
-        if not args.skip_installer:
-            compile_installer(mode, stage)
+    build_root = ROOT / "build" / "installer" if args.keep_build else Path(tempfile.mkdtemp(prefix="ameath-release-"))
+    if args.keep_build:
+        remove_tree(build_root)
+        build_root.mkdir(parents=True)
+    try:
+        modes = ("online", "offline") if args.mode == "all" else (args.mode,)
+        for mode in modes:
+            stage = build_root / mode
+            stage.mkdir(parents=True)
+            build_frontend(stage, build_root)
+            if mode == "offline":
+                archive = archive_runtime(build_runtime(stage, args.hermes_source, args.python), build_root)
+                print(f"Offline runtime: {archive} ({sha256(archive)})")
+            else:
+                if not args.runtime_url or not args.runtime_sha256:
+                    raise RuntimeError("Online builds require --runtime-url and --runtime-sha256 from the offline runtime archive.")
+                make_online_runtime(stage, args.runtime_url, args.runtime_sha256)
+            if not args.skip_installer:
+                compile_installer(mode, stage)
+    finally:
+        if not args.keep_build:
+            remove_tree(build_root)
     return 0
 
 
