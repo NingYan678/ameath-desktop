@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import digital_pet.config as config
-from digital_pet.config import Settings
+from digital_pet.config import Settings, packaged_runtime_python
 
 
 def test_packaged_copy_ignores_development_hermes_environment(monkeypatch, tmp_path):
@@ -26,3 +26,13 @@ def test_development_startup_uses_the_hidden_vbs_launcher(monkeypatch, tmp_path)
     settings = Settings(tmp_path, tmp_path, Path("missing"), Path("missing"))
 
     assert settings.launch_command == f'wscript.exe //B "{tmp_path / "run.vbs"}"'
+
+
+def test_packaged_runtime_python_uses_relative_build_metadata(tmp_path):
+    runtime = tmp_path / "runtime"
+    interpreter = runtime / "python" / "cpython" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    (runtime / "runtime_metadata.json").write_text('{"python_relative_path": "python/cpython/python.exe"}', encoding="utf-8")
+
+    assert packaged_runtime_python(runtime) == interpreter.resolve()

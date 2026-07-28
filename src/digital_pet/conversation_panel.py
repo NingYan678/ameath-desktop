@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QTextEdit,
     QTextBrowser,
     QVBoxLayout,

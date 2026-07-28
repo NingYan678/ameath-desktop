@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,19 @@ def _development_hermes_home() -> Path:
 
 
 DEFAULT_HERMES_HOME = default_data_root() / "hermes" if is_packaged() else _development_hermes_home()
+
+
+def packaged_runtime_python(runtime_root: Path) -> Path:
+    """Resolve the staged interpreter without relying on the build machine layout."""
+    metadata = runtime_root / "runtime_metadata.json"
+    try:
+        relative = str(json.loads(metadata.read_text(encoding="utf-8"))["python_relative_path"])
+        candidate = (runtime_root / relative).resolve()
+        if candidate.is_relative_to(runtime_root.resolve()) and candidate.is_file():
+            return candidate
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return runtime_root / "python" / "python.exe"
 
 
 @dataclass(frozen=True)
@@ -85,7 +99,7 @@ def load_settings() -> Settings:
     runtime_root = Path(os.getenv("AMEATH_RUNTIME_ROOT", str(install_root / "runtime")))
     if is_packaged():
         default_home = data_root / "hermes"
-        default_python = runtime_root / "python" / "python.exe"
+        default_python = packaged_runtime_python(runtime_root)
         default_launcher = runtime_root / "hermes-agent" / "hermes_cli" / "main.py"
     else:
         default_home = _development_hermes_home()

@@ -75,7 +75,7 @@ def test_settings_dialog_saves_preferences_and_stages_global_hermes_update(tmp_p
     monkeypatch.setattr("digital_pet.settings_dialog.QMessageBox.information", lambda *args: None)
 
     dialog._apply_hermes()
-    wait_for(lambda: hasattr(hermes, "applied"))
+    wait_for(lambda: hasattr(hermes, "applied") and dialog._hermes_task is None)
 
     assert store.load().pet_size == 250
     assert startup.enabled is False

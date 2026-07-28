@@ -16,6 +16,10 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,20 +28,12 @@ APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
 SKIP_SOURCE_NAMES = {".git", ".github", ".plans", "tests", "tests-js", "docs", "website", "node_modules", "venv", ".venv", ".cache", "build", "dist", "__pycache__"}
-ASSET_FILES = frozenset(
-    {
-        "gifs/ameath.gif", "gifs/ameath.ico",
-        "gifs/screen1.gif", "gifs/screen2.gif", "gifs/screen3.gif", "gifs/screen4.gif", "gifs/screen5.gif", "gifs/screen6.gif", "gifs/screen7.gif",
-        "gifs/sd_blink.gif", "gifs/sd_breathe.gif", "gifs/sd_curious_peek.gif", "gifs/sd_drag.gif", "gifs/sd_float.gif",
-        "gifs/sd_greeting.gif", "gifs/sd_idle_happy.gif", "gifs/sd_look_left.gif", "gifs/sd_look_right.gif", "gifs/sd_move.gif",
-        "gifs/sd_paper_plane.gif", "gifs/sd_sleepy_stretch.gif", "gifs/sd_sparkle_happy.gif", "gifs/sd_surprised.gif", "gifs/sd_sway.gif",
-    }
-)
+ASSET_FILES = PACKAGED_ASSET_FILES
 
 
-def run(*command: str, cwd: Path | None = None) -> None:
+def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command))
-    subprocess.run(command, cwd=cwd, check=True)
+    subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
 def remove_tree(path: Path) -> None:
@@ -100,17 +96,31 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     remove_tree(runtime)
     source_target = runtime / "hermes-agent"
     shutil.copytree(hermes_source, source_target, ignore=ignore_source)
-    # A clean CPython is used instead of copying a development venv.
-    run("uv", "python", "install", python_version)
-    interpreter = subprocess.check_output(["uv", "python", "find", python_version], text=True).strip()
-    shutil.copytree(Path(interpreter).resolve().parent, runtime / "python")
-    # uv-managed CPython carries the PEP 668 marker. This is a copied release
-    # runtime, not the build machine's interpreter, so it is safe to populate.
+    python_root = runtime / "python"
+    python_environment = os.environ.copy()
+    python_environment["UV_PYTHON_INSTALL_DIR"] = str(python_root)
+    run("uv", "python", "install", "--install-dir", str(python_root), "--no-registry", python_version, env=python_environment)
+    interpreters = tuple(python_root.glob("*/python.exe"))
+    if not interpreters:
+        raise RuntimeError("uv did not create a portable Python interpreter in the release staging directory")
+    interpreter = max(interpreters, key=lambda candidate: candidate.stat().st_mtime_ns).resolve()
+    if not interpreter.is_file() or not interpreter.is_relative_to(runtime.resolve()):
+        raise RuntimeError("uv did not install a portable Python inside the release staging directory")
     # Hermes intentionally blocks wheel builds; the shipped source tree is the
     # runtime, so an editable install is the supported production layout here.
     run(
-        "uv", "pip", "install", "--break-system-packages", "--python", str(runtime / "python" / "python.exe"),
+        "uv", "pip", "install", "--break-system-packages", "--link-mode", "copy", "--python", str(interpreter),
         "-e", str(source_target), "aiohttp==3.14.1",
+    )
+    prefix = Path(subprocess.check_output([str(interpreter), "-c", "import sys; print(sys.prefix)"], text=True).strip()).resolve()
+    if not prefix.is_relative_to(runtime.resolve()):
+        raise RuntimeError("staged Hermes Python resolved outside the release staging directory")
+    hermes_module = Path(subprocess.check_output([str(interpreter), "-c", "import hermes_cli; print(hermes_cli.__file__)"], text=True).strip()).resolve()
+    if not hermes_module.is_relative_to(runtime.resolve()):
+        raise RuntimeError("staged Hermes source resolved outside the release staging directory")
+    (runtime / "runtime_metadata.json").write_text(
+        json.dumps({"python_relative_path": interpreter.relative_to(runtime).as_posix(), "hermes_commit": HERMES_COMMIT, "python_version": python_version}, indent=2) + "\n",
+        encoding="utf-8",
     )
     license_path = hermes_source / "LICENSE"
     if license_path.is_file():
@@ -162,6 +172,12 @@ def main() -> int:
         raise RuntimeError("Windows is required to build Windows installers.")
     if not (args.hermes_source / "hermes_cli" / "main.py").is_file():
         raise RuntimeError("--hermes-source must point to a Hermes source checkout.")
+    try:
+        commit = subprocess.check_output(["git", "-C", str(args.hermes_source), "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("--hermes-source must be a Git checkout pinned to the required Hermes commit.") from exc
+    if commit != HERMES_COMMIT:
+        raise RuntimeError(f"--hermes-source is {commit}, expected pinned Hermes commit {HERMES_COMMIT}.")
     build_root = ROOT / "build" / "installer" if args.keep_build else Path(tempfile.mkdtemp(prefix="ameath-release-"))
     if args.keep_build:
         remove_tree(build_root)

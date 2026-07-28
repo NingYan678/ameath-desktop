@@ -11,7 +11,7 @@ from digital_pet.runtime_choice_dialog import RuntimeChoiceDialog
 
 
 def test_runtime_choice_returns_qdialog_accepted_code():
-    app = QApplication.instance() or QApplication([])
+    _ = QApplication.instance() or QApplication([])
     root = Path(r"D:\hermes")
     installation = HermesInstallation(root, root / "python.exe", root / "hermes_cli.py", root / "hermes-agent", "fingerprint", False)
     dialog = RuntimeChoiceDialog(installation)
@@ -23,7 +23,7 @@ def test_runtime_choice_returns_qdialog_accepted_code():
 
 
 def test_runtime_choice_has_an_explicit_later_option():
-    app = QApplication.instance() or QApplication([])
+    _ = QApplication.instance() or QApplication([])
     root = Path(r"D:\hermes")
     installation = HermesInstallation(root, root / "python.exe", root / "hermes_cli.py", root / "hermes-agent", "fingerprint", False)
     dialog = RuntimeChoiceDialog(installation)
