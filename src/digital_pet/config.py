@@ -45,13 +45,8 @@ DEFAULT_HERMES_HOME = default_data_root() / "hermes" if is_packaged() else _deve
 class Settings:
     asset_root: Path
     data_root: Path
-    hermes_base_url: str
-    hermes_api_key: str
-    hermes_model: str
-    hermes_timeout_seconds: float
     hermes_cli_python: Path
     hermes_cli_launcher: Path
-    hermes_bridge_startup_seconds: float = 25.0
     hermes_home: Path = DEFAULT_HERMES_HOME
     install_root: Path = PROJECT_ROOT
     hermes_runtime_root: Path = Path()
@@ -80,19 +75,6 @@ class Settings:
     def resources_root(self) -> Path:
         return resource_root()
 
-    @property
-    def hermes_backend(self) -> str:
-        if self.hermes_base_url and self.hermes_model:
-            return "http"
-        if self.hermes_cli_python.is_file() and self.hermes_cli_launcher.is_file():
-            return "cli"
-        return "none"
-
-    @property
-    def hermes_enabled(self) -> bool:
-        return self.hermes_backend != "none"
-
-
 def load_settings() -> Settings:
     # .env remains a development convenience. Installed copies use the setup
     # wizard and user data directory instead, so no secrets ship in the app.
@@ -109,28 +91,15 @@ def load_settings() -> Settings:
         default_home = _development_hermes_home()
         default_python = default_home / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe"
         default_launcher = default_home / "hermes-agent" / "hermes_cli" / "main.py"
-    try:
-        timeout = max(1.0, float(os.getenv("HERMES_TIMEOUT_SECONDS", "60")))
-    except ValueError:
-        timeout = 60.0
-    try:
-        bridge_startup_seconds = max(3.0, float(os.getenv("HERMES_BRIDGE_STARTUP_SECONDS", "25")))
-    except ValueError:
-        bridge_startup_seconds = 25.0
     return Settings(
         asset_root=Path(os.getenv("AMEATH_ASSET_ROOT", str(resource_root() / "assets" / "recovered"))),
         data_root=data_root,
-        hermes_base_url=os.getenv("HERMES_BASE_URL", "").strip().rstrip("/"),
-        hermes_api_key=os.getenv("HERMES_API_KEY", "").strip(),
-        hermes_model=os.getenv("HERMES_MODEL", "").strip(),
-        hermes_timeout_seconds=timeout,
         # A packaged app must never inherit the developer's HERMES_* paths.
         # Those variables often point at an existing personal Gateway and would
         # silently merge the two assistants. Advanced package testing may use
         # the explicitly namespaced AMEATH_* overrides instead.
         hermes_cli_python=Path(os.getenv("AMEATH_HERMES_PYTHON", str(default_python))) if is_packaged() else Path(os.getenv("HERMES_CLI_PYTHON", str(default_python))),
         hermes_cli_launcher=Path(os.getenv("AMEATH_HERMES_LAUNCHER", str(default_launcher))) if is_packaged() else Path(os.getenv("HERMES_CLI_LAUNCHER", str(default_launcher))),
-        hermes_bridge_startup_seconds=bridge_startup_seconds,
         hermes_home=Path(os.getenv("AMEATH_HERMES_HOME", str(default_home))) if is_packaged() else Path(os.getenv("HERMES_HOME", str(default_home))),
         install_root=install_root,
         hermes_runtime_root=runtime_root,

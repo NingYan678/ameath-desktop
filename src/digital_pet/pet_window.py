@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QInputDialog, QLabel, QWidget
 
 from .ameath_runtime import AmeathRuntimeService
 from .activity_monitor import ActivityMonitor
-from .butler_protocol import BubblePriority, BubbleScheduler
+from .butler_protocol import BubblePriority, BubbleScheduler, PET_STATE_ANIMATIONS
 from .config import PROJECT_ROOT, Settings
 from .conversation_panel import ConversationPanel
 from .hermes_desktop_client import HermesDesktopClient
@@ -45,13 +45,6 @@ ANIMATION_LABELS = {
 IDLE_ANIMATIONS = ("idle_soft", "idle_alert", "idle_happy", "idle_sleepy")
 MICRO_MOTIONS = ("blink", "look_left", "look_right", "breathe", "sway", "float", "greeting", "curious_peek", "surprised", "sleepy_stretch", "paper_plane", "sparkle_happy")
 LOGGER = logging.getLogger("digital_pet.runtime")
-GATEWAY_ANIMATIONS = {
-    "thinking": "thinking", "running": "busy", "analyzing": "thinking", "building": "busy",
-    "searching": "attention", "permission": "question", "celebrating": "music", "failed": "sad",
-    "idle": "idle_soft", "attention": "attention",
-}
-
-
 class NativePulse(QWidget):
     """A small local animation for Hermes-originated notifications."""
 
@@ -474,7 +467,7 @@ class PetWindow(QWidget):
             self._react("attention", "爱弥斯已作为 Hermes 桌面终端上线。", 1_800, priority=BubblePriority.CHAT)
         elif event_type == "status":
             state = str(payload.get("state", "thinking"))
-            self._load_animation(GATEWAY_ANIMATIONS.get(state, "thinking"))
+            self._load_animation(PET_STATE_ANIMATIONS.get(state, "thinking"))
             content = str(payload.get("content", ""))
             if content:
                 self.conversation.show_status(content, expand=True)

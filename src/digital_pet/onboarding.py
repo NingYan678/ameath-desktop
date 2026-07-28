@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import httpx
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -125,14 +126,18 @@ class OnboardingDialog(QDialog):
             endpoint = profile.base_url.rstrip("/") + "/models"
             headers = {"Authorization": f"Bearer {profile.api_key}"}
         try:
-            response = httpx.get(endpoint, headers=headers, timeout=8.0)
-        except httpx.HTTPError:
+            request = Request(endpoint, headers=headers)
+            with urlopen(request, timeout=8.0) as response:
+                status_code = response.status
+        except HTTPError as exc:
+            status_code = exc.code
+        except (OSError, URLError, ValueError):
             return False, "无法连接到该服务，请检查网络、地址和本地服务状态。"
-        if 200 <= response.status_code < 300:
+        if 200 <= status_code < 300:
             return True, "连接成功。"
-        if response.status_code in {401, 403}:
+        if status_code in {401, 403}:
             return False, "服务拒绝了凭据，请检查 API Key。"
-        return False, f"服务返回了 {response.status_code}，请检查地址和模型服务状态。"
+        return False, f"服务返回了 {status_code}，请检查地址和模型服务状态。"
 
     def _test_connection(self) -> None:
         valid, message = self.test_profile(self.profile())

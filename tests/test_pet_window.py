@@ -14,10 +14,6 @@ def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         asset_root=tmp_path / "assets",
         data_root=tmp_path / "data",
-        hermes_base_url="",
-        hermes_api_key="",
-        hermes_model="",
-        hermes_timeout_seconds=30,
         hermes_cli_python=tmp_path / "runtime" / "python.exe",
         hermes_cli_launcher=tmp_path / "runtime" / "hermes_cli.py",
         hermes_home=tmp_path / "data" / "hermes",

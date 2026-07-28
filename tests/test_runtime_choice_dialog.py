@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
-from digital_pet.legacy_hermes import HermesInstallation
+from digital_pet.existing_hermes import HermesInstallation
 from digital_pet.runtime_choice_dialog import RuntimeChoiceDialog
 
 
