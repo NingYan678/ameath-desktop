@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +18,7 @@ from .conversation_panel import ConversationPanel
 from .hermes_desktop_client import HermesDesktopClient
 from .hermes_settings import HermesSettingsService
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
-from .pet_state import PetStateEngine, PetStateStore
+from .pet_state import CLICK_INTERACTIONS, DRAG_INTERACTIONS, CompanionInteraction, PetStateEngine, PetStateStore
 from .runtime_supervisor import RuntimeSupervisor
 from .settings_dialog import SettingsDialog
 
@@ -27,13 +28,23 @@ ANIMATIONS = {
     "move": "sd_move.gif", "drag": "sd_drag.gif", "notice": "screen1.gif", "sad": "screen2.gif",
     "attention": "screen3.gif", "thinking": "screen4.gif", "busy": "screen5.gif", "rest": "screen6.gif",
     "question": "screen7.gif", "music": "ameath.gif",
+    "blink": "sd_blink.gif", "look_left": "sd_look_left.gif", "look_right": "sd_look_right.gif",
+    "breathe": "sd_breathe.gif", "sway": "sd_sway.gif", "float": "sd_float.gif",
+    "greeting": "sd_greeting.gif", "curious_peek": "sd_curious_peek.gif", "surprised": "sd_surprised.gif",
+    "sleepy_stretch": "sd_sleepy_stretch.gif",
+    "paper_plane": "sd_paper_plane.gif", "sparkle_happy": "sd_sparkle_happy.gif",
 }
 ANIMATION_LABELS = {
     "idle_soft": "待机：眨眼", "idle_alert": "待机：注意", "idle_happy": "待机：微笑", "idle_sleepy": "待机：困倦",
     "move": "移动过渡", "drag": "拖动反馈", "notice": "关注你", "sad": "难过", "attention": "回应你",
     "thinking": "思考", "busy": "专注", "rest": "休息", "question": "等待指令", "music": "小小音乐会",
+    "blink": "眨眼", "look_left": "左顾", "look_right": "右盼", "breathe": "轻呼吸", "sway": "轻摇摆", "float": "漂浮",
+    "greeting": "歪头招呼", "curious_peek": "探头", "surprised": "惊讶", "sleepy_stretch": "困倦伸展",
+    "paper_plane": "纸飞机", "sparkle_happy": "闪光开心",
 }
 IDLE_ANIMATIONS = ("idle_soft", "idle_alert", "idle_happy", "idle_sleepy")
+MICRO_MOTIONS = ("blink", "look_left", "look_right", "breathe", "sway", "float", "greeting", "curious_peek", "surprised", "sleepy_stretch", "paper_plane", "sparkle_happy")
+LOGGER = logging.getLogger("digital_pet.runtime")
 GATEWAY_ANIMATIONS = {
     "thinking": "thinking", "running": "busy", "analyzing": "thinking", "building": "busy",
     "searching": "attention", "permission": "question", "celebrating": "music", "failed": "sad",
@@ -129,6 +140,8 @@ class PetWindow(QWidget):
         self._pending_action: dict[str, Any] | None = None
         self._current_animation = "idle_soft"
         self._paused = False
+        self._recent_motion_ids: list[str] = []
+        self._recent_interaction_ids: list[str] = []
         self._gateway = HermesDesktopClient(settings, self)
         self._gateway.connected.connect(self._on_gateway_connected)
         self._gateway.disconnected.connect(self._on_gateway_disconnected)
@@ -141,14 +154,27 @@ class PetWindow(QWidget):
         self._settle_timer.setSingleShot(True)
         self._settle_timer.timeout.connect(self._return_to_idle)
         self._idle_timer = QTimer(self)
-        self._idle_timer.setInterval(9_000)
+        self._idle_timer.setInterval(5_000)
         self._idle_timer.timeout.connect(self._auto_switch)
+        self._motion_timer = QTimer(self)
+        self._motion_timer.setSingleShot(True)
+        self._motion_timer.timeout.connect(self._trigger_micro_motion)
         self._proactive_timer = QTimer(self)
         self._proactive_timer.setSingleShot(True)
         self._proactive_timer.timeout.connect(self._trigger_proactive)
         self._rest_timer = QTimer(self)
         self._rest_timer.setSingleShot(True)
         self._rest_timer.timeout.connect(self._rest_after_inactivity)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(700)
+        self._hover_timer.timeout.connect(self._trigger_hover_motion)
+        self._hover_cooldown_timer = QTimer(self)
+        self._hover_cooldown_timer.setSingleShot(True)
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(180)
+        self._click_timer.timeout.connect(self._trigger_click_interaction)
         self._conversation_timer = QTimer(self)
         self._conversation_timer.setSingleShot(True)
         self._conversation_timer.timeout.connect(self._collapse_conversation_when_idle)
@@ -178,6 +204,7 @@ class PetWindow(QWidget):
         self._speak("正在连接 Hermes Gateway…", BubblePriority.ACTIVITY)
         self._idle_timer.start()
         self._schedule_proactive()
+        self._schedule_micro_motion()
         self._register_activity()
         self._supervisor.start()
 
@@ -251,15 +278,18 @@ class PetWindow(QWidget):
         self.pet.setGeometry(pet_left, pet_top, pet_size, pet_size)
         self._native_pulse.setGeometry(pet_left, pet_top, pet_size, pet_size)
 
-    def _react(self, animation: str, text: str, duration_ms: int = 2_000, *, priority: BubblePriority = BubblePriority.ACTIVITY) -> None:
+    def _react(self, animation: str, text: str, duration_ms: int = 2_000, *, priority: BubblePriority = BubblePriority.ACTIVITY) -> bool:
         self._settle_timer.stop()
         self._load_animation(animation)
-        self._speak(text, priority)
+        shown = self._speak(text, priority)
         self._settle_timer.start(duration_ms)
+        return shown
 
-    def _speak(self, text: str, priority: BubblePriority = BubblePriority.ACTIVITY) -> None:
+    def _speak(self, text: str, priority: BubblePriority = BubblePriority.ACTIVITY) -> bool:
         if self._bubble_scheduler.should_show(priority):
             self.conversation.show_status(text)
+            return True
+        return False
 
     def _register_activity(self) -> None:
         self._rest_timer.start(45_000)
@@ -293,24 +323,50 @@ class PetWindow(QWidget):
             return
         self._load_animation(random.choice(IDLE_ANIMATIONS))
 
+    def _schedule_micro_motion(self) -> None:
+        self._motion_timer.stop()
+        self._motion_timer.start(random.randint(18_000, 35_000))
+
+    def _trigger_micro_motion(self) -> None:
+        blocked = self.game_mode_active or self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
+        if blocked:
+            self._motion_timer.start(5_000)
+            return
+        available = [name for name in MICRO_MOTIONS if name not in self._recent_motion_ids]
+        motion = random.choice(available or list(MICRO_MOTIONS))
+        self._recent_motion_ids = (*self._recent_motion_ids, motion)[-4:]
+        self._load_animation(motion)
+        self._settle_timer.start(1_900)
+        self._schedule_micro_motion()
+
     def _schedule_proactive(self) -> None:
         self._proactive_timer.stop()
         if self.preferences.proactive_enabled:
-            self._proactive_timer.start(self._pet_state.proactive_delay_ms())
+            delay = self._pet_state.proactive_delay_ms()
+            LOGGER.info("Ameath proactive interaction scheduled in %d ms", delay)
+            self._proactive_timer.start(delay)
 
     def _trigger_proactive(self) -> None:
-        fullscreen = self.preferences.auto_game_mode and self._activity_monitor.fullscreen_foreground()
-        self._set_auto_game_mode(fullscreen)
+        auto_fullscreen = self.preferences.auto_game_mode and self._activity_monitor.fullscreen_foreground()
+        fullscreen = self.game_mode_active or auto_fullscreen
+        self._set_auto_game_mode(auto_fullscreen)
         blocked = self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
         if blocked:
+            LOGGER.info("Ameath proactive interaction deferred: transient UI activity")
             self._proactive_timer.start(5_000)
             return
         event = self._pet_state.proactive_event(fullscreen=fullscreen, busy=self.conversation.is_expanded)
         if event is None:
-            # A due interaction waits quietly until the user leaves a protected state.
-            self._proactive_timer.start(60_000)
+            LOGGER.info("Ameath proactive interaction suppressed by a protected state")
+            self._schedule_proactive()
             return
-        self._react(event.animation, event.text, 4_000)
+        if self._react(event.animation, event.text, 4_000):
+            self._pet_state.record_proactive(event)
+            LOGGER.info("Ameath proactive interaction displayed: %s", event.event_id)
+        else:
+            LOGGER.info("Ameath proactive interaction deferred by bubble priority: %s", event.event_id)
+            self._proactive_timer.start(5_000)
+            return
         self._schedule_proactive()
 
     def trigger_proactive_now(self) -> bool:
@@ -322,7 +378,8 @@ class PetWindow(QWidget):
         if event is None:
             self._speak("我现在没法分心，稍等我一下。")
             return False
-        self._react(event.animation, event.text, 4_000)
+        if self._react(event.animation, event.text, 4_000):
+            self._pet_state.record_proactive(event)
         self._schedule_proactive()
         return True
 
@@ -400,7 +457,9 @@ class PetWindow(QWidget):
 
     def _rest_after_inactivity(self) -> None:
         if self._drag_offset is None and self._pending_action is None and not self._paused:
-            self._react("rest", "我会在这里等待 Hermes 的下一条消息。", 4_000)
+            self._load_animation("sleepy_stretch")
+            self._settle_timer.start(2_200)
+        self._rest_timer.start(90_000)
 
     def _on_gateway_connected(self) -> None:
         self._react("attention", "已连接到 Hermes。", 1_500, priority=BubblePriority.CHAT)
@@ -485,9 +544,20 @@ class PetWindow(QWidget):
 
     def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
-        if self._drag_offset is None and not self._settle_timer.isActive():
-            self._react("notice", "我在这里。", 1_500)
+        if not self._hover_cooldown_timer.isActive():
+            self._hover_timer.start()
         super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._hover_timer.stop()
+        super().leaveEvent(event)
+
+    def _trigger_hover_motion(self) -> None:
+        if self._drag_offset is not None or self._pending_action is not None or self._paused or self._settle_timer.isActive():
+            return
+        self._load_animation("curious_peek")
+        self._settle_timer.start(1_500)
+        self._hover_cooldown_timer.start(20_000)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
@@ -495,7 +565,6 @@ class PetWindow(QWidget):
             self._note_user_interaction()
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._drag_started = False
-            self._react("notice", "请问有什么吩咐？", 1_500)
             event.accept()
         elif event.button() == Qt.RightButton:
             self.context_menu_requested.emit()
@@ -520,10 +589,34 @@ class PetWindow(QWidget):
             self._drag_offset = None
             self._drag_started = False
             self._register_activity()
-            self._react("move" if dragged else "attention", "位置已更新。" if dragged else "我在听。", 1_200)
+            if dragged:
+                self._trigger_interaction(DRAG_INTERACTIONS)
+            else:
+                self._click_timer.start()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.button() == Qt.LeftButton:
+            self._click_timer.stop()
+            self._note_user_interaction()
+            self._react("greeting", "想说点什么吗？", 1_600)
+            self.open_chat()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _trigger_click_interaction(self) -> None:
+        self._trigger_interaction(CLICK_INTERACTIONS)
+
+    def _trigger_interaction(self, catalogue: tuple[CompanionInteraction, ...]) -> None:
+        if self._pending_action is not None or self._paused:
+            return
+        choices = [item for item in catalogue if item.event_id not in self._recent_interaction_ids]
+        item = random.choice(choices or list(catalogue))
+        self._recent_interaction_ids = (*self._recent_interaction_ids, item.event_id)[-4:]
+        self._react(item.animation, item.text, item.duration_ms)
 
     def toggle_pause(self) -> None:
         if self._movie is None:

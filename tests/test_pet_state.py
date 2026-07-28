@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import random
 
-from digital_pet.pet_state import PROACTIVE_EVENTS, PetStateEngine, PetStateStore
+from digital_pet.pet_state import CLICK_INTERACTIONS, DRAG_INTERACTIONS, PROACTIVE_EVENTS, PetStateEngine, PetStateStore
 from digital_pet.preferences import DesktopPreferences
 
 
@@ -33,6 +33,7 @@ def test_proactive_has_no_daily_cap_and_remembers_recent_events(tmp_path):
     for index in range(20):
         event = engine.proactive_event(fullscreen=False, busy=False, now=now + timedelta(minutes=index))
         assert event is not None
+        engine.record_proactive(event, now + timedelta(minutes=index))
         events.append(event)
 
     assert len(events) == 20
@@ -59,9 +60,22 @@ def test_manual_proactive_event_overrides_automatic_quiet_and_dnd_limits(tmp_pat
     assert engine.proactive_event(fullscreen=True, busy=True, now=datetime(2026, 7, 27, 23, 30), manual=True)
 
 
+def test_proactive_selection_is_not_recorded_until_the_pet_actually_displays_it(tmp_path):
+    store = PetStateStore(tmp_path)
+    engine = PetStateEngine(store, DesktopPreferences())
+    event = engine.proactive_event(fullscreen=False, busy=False, now=datetime(2026, 7, 27, 12, 0))
+
+    assert event is not None
+    assert store.load().last_proactive == ""
+    engine.record_proactive(event, datetime(2026, 7, 27, 12, 0))
+    assert store.load().recent_proactive_ids == (event.event_id,)
+
+
 def test_proactive_catalogue_is_original_and_balanced_for_reply_invites():
     forbidden = ("主人", "老公", "老婆", "亲爱的")
-    assert len(PROACTIVE_EVENTS) == 40
+    assert len(PROACTIVE_EVENTS) == 60
     assert len({event.event_id for event in PROACTIVE_EVENTS}) == len(PROACTIVE_EVENTS)
-    assert sum(event.expects_reply for event in PROACTIVE_EVENTS) == 10
+    assert sum(event.expects_reply for event in PROACTIVE_EVENTS) == 14
     assert all(not any(word in event.text for word in forbidden) for event in PROACTIVE_EVENTS)
+    assert len(CLICK_INTERACTIONS) == 12
+    assert len(DRAG_INTERACTIONS) == 4

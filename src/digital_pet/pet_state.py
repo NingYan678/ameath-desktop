@@ -24,6 +24,16 @@ class ProactiveEvent:
     hours: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class CompanionInteraction:
+    """A short local reaction to a desktop-pet gesture."""
+
+    event_id: str
+    text: str
+    animation: str
+    duration_ms: int = 1_600
+
+
 def _event(
     event_id: str,
     text: str,
@@ -80,6 +90,49 @@ PROACTIVE_EVENTS: tuple[ProactiveEvent, ...] = (
     _event("work-proud", "做完一段就给自己一点肯定吧。认真投入的样子，本来就很闪闪发光。", "work", animation="idle_happy"),
     _event("quiet-company", "不用特地回应我。安静一起待着，也算陪伴。", "quiet", animation="rest"),
     _event("quiet-wind", "世界很大，眼前这一刻却很安静。慢一点也没关系。", "quiet", animation="rest"),
+    _event("morning-route", "早上的路线不用排得太满。留一点空白，才装得下意外的好事。", "time", hours=tuple(range(8, 12))),
+    _event("morning-signal", "早安信号已接收。先把最小的那一步走出去，后面会清楚起来。", "time", animation="greeting", hours=tuple(range(8, 12))),
+    _event("afternoon-window", "看远一点，眼睛会舒服些。回来以后，难题也许就没刚才那么凶了。", "care", animation="look_left", hours=tuple(range(12, 18))),
+    _event("afternoon-plane", "我刚折好一架纸飞机。它不赶时间，只负责替今天飞一小段。", "campus", animation="paper_plane", hours=tuple(range(12, 18))),
+    _event("afternoon-curious", "要是把今天的进展画成一张地图，你觉得自己走到哪里了？", "work", expects_reply=True, animation="curious_peek", hours=tuple(range(12, 18))),
+    _event("evening-lantern", "夜色慢慢落下来啦。把今天做成的事数一数，总会有一两件值得亮灯。", "time", animation="sparkle_happy", hours=tuple(range(18, 23))),
+    _event("evening-songbook", "我把刚才的心情记进了小小歌本。你今天最想留下哪一个瞬间？", "music", expects_reply=True, animation="music", hours=tuple(range(18, 23))),
+    _event("evening-stretch", "给手指和肩膀一点伸展时间吧。认真赶路的人，也该被好好照顾。", "care", animation="sleepy_stretch", hours=tuple(range(18, 23))),
+    _event("ghost-spark", "电子幽灵巡逻报告：一切正常，只有空气里多了一点闪闪的期待。", "ghost", animation="sparkle_happy"),
+    _event("ghost-peek", "我从数据缝隙里探头看了一眼。放心，没偷看你的内容，只是来打个招呼。", "ghost", animation="curious_peek"),
+    _event("campus-postcard", "学院公告栏上总有奇怪又有趣的活动。哪天我们也去凑个热闹吧。", "campus", animation="greeting"),
+    _event("campus-question", "如果有一节只学好奇心的课，你最想研究什么？", "campus", expects_reply=True, animation="curious_peek"),
+    _event("care-small-step", "把下一步缩到足够小，小到只需要动一下手指。这样也算前进。", "care", animation="breathe"),
+    _event("care-rest-eyes", "眼睛累的话，先眨几下。世界不会因为你停半分钟就跑掉。", "care", animation="blink"),
+    _event("support-spark", "做得不完美也没关系。愿意继续调整的人，本来就很厉害。", "support", animation="sparkle_happy"),
+    _event("support-map", "想不清楚的时候，先把知道的部分圈出来。未知的地方，慢慢再去找。", "support", animation="look_right"),
+    _event("music-rhythm", "我在给今天配节拍：不必很快，只要是你自己的速度就好。", "music", animation="sway"),
+    _event("music-question", "如果能把一种声音装进纸飞机，你会让它带走什么？", "music", expects_reply=True, animation="paper_plane"),
+    _event("work-checkpoint", "到一个小检查点啦。喝口水，再决定下一段要怎么走。", "work", animation="breathe"),
+    _event("work-surprise", "欸，好像有个新思路从角落里蹦出来了。先记住它，晚点再慢慢看。", "work", animation="surprised"),
+)
+
+
+CLICK_INTERACTIONS: tuple[CompanionInteraction, ...] = (
+    CompanionInteraction("click-hello", "嗯？我在听。", "greeting"),
+    CompanionInteraction("click-bright", "看见你啦。今天也一起把日子过亮一点。", "sparkle_happy"),
+    CompanionInteraction("click-curious", "有什么新鲜事想分享吗？", "curious_peek"),
+    CompanionInteraction("click-small", "先从最简单的地方开始，我陪你。", "breathe"),
+    CompanionInteraction("click-game", "我刚想到一个小点子，等你有空再说给你听。", "sway"),
+    CompanionInteraction("click-ghost", "电子幽灵在岗，信号良好。", "float"),
+    CompanionInteraction("click-check", "收到。先给你一个认真点头。", "breathe"),
+    CompanionInteraction("click-plane", "纸飞机准备好了，要不要替今天捎句话？", "paper_plane"),
+    CompanionInteraction("click-calm", "不用急，我会跟上你的节奏。", "breathe"),
+    CompanionInteraction("click-smile", "这一下算作今日份招呼。", "sparkle_happy"),
+    CompanionInteraction("click-look", "我在这里，放心做你的事吧。", "look_left"),
+    CompanionInteraction("click-star", "小小闪光，送给正在努力的你。", "sparkle_happy"),
+)
+
+DRAG_INTERACTIONS: tuple[CompanionInteraction, ...] = (
+    CompanionInteraction("drag-window", "新位置不错，视野也更新了。", "move"),
+    CompanionInteraction("drag-flight", "安全着陆。这里就当作新的观察点吧。", "paper_plane"),
+    CompanionInteraction("drag-route", "路线调整完成，我继续陪着。", "drag"),
+    CompanionInteraction("drag-wave", "好，停在这里。", "greeting"),
 )
 
 
@@ -167,6 +220,11 @@ class PetStateEngine:
         ):
             return None
         event = self._choose_event(moment.hour)
+        return event
+
+    def record_proactive(self, event: ProactiveEvent, now: datetime | None = None) -> None:
+        """Persist only an interaction that the UI has actually shown."""
+        moment = now or datetime.now()
         recent = (*self.state.recent_proactive_ids, event.event_id)[-12:]
         self.state = replace(
             self.state,
@@ -176,7 +234,6 @@ class PetStateEngine:
             last_proactive_category=event.category,
         )
         self.store.save(self.state)
-        return event
 
     def _choose_event(self, hour: int) -> ProactiveEvent:
         eligible = [event for event in PROACTIVE_EVENTS if not event.hours or hour in event.hours]

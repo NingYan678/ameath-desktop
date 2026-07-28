@@ -68,3 +68,29 @@ def test_manual_proactive_trigger_shows_a_local_companion_event(tmp_path):
     assert window.trigger_proactive_now()
     assert window._proactive_timer.isActive()
     window.close()
+
+
+def test_rest_motion_does_not_replace_the_last_companion_status(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = PetWindow(make_settings(tmp_path))
+    window.conversation.show_status("上一条互动")
+
+    window._rest_after_inactivity()
+    app.processEvents()
+
+    assert window.conversation._status_text == "上一条互动"
+    window.close()
+
+
+def test_micro_motion_pool_avoids_recent_repeats(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = PetWindow(make_settings(tmp_path))
+    window._settle_timer.stop()
+
+    window._trigger_micro_motion()
+    first = window._recent_motion_ids[-1]
+    window._settle_timer.stop()
+    window._trigger_micro_motion()
+
+    assert window._recent_motion_ids[-1] != first
+    window.close()
