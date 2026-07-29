@@ -1,15 +1,14 @@
 # Changelog
 
-## 1.0.1 - 2026-07-29
+## 1.1.0
 
-- Unified the animation catalog and removed the unused reminder protocol.
-- Kept proactive interactions, Hermes updates, credentials, and user settings
-  behavior compatible with 1.0.0.
-- Made the release checks cover the Hermes desktop plugin and the complete
-  packaged asset manifest.
-- Removed the unconnected online installer path and added Windows version
-  metadata, project notices, and a reproducible offline build.
-- Hermes is bundled from the verified official baseline commit recorded by the
-  release build and remains independently updateable after installation.
+- Added proactive-question replies with preserved context and compact response controls.
+- Added motion sequences, hidden familiarity stages, daily interaction protection, and a versioned companion content catalog.
+- Added opt-in, hash-only memory cues with a six-hour request limit.
+- Added lock/suspend lifecycle handling, low-power and reduced-motion behavior, keyboard shortcuts, and accessible control names.
+- Added an independent official GitHub application update checker with explicit confirmation, size limits, atomic downloads, and SHA-256 verification.
+- Added a tag-driven Windows release workflow with optional Authenticode signing; unsigned builds remain clearly supported.
 
-This Windows installer is unsigned. Verify its SHA-256 checksum before use.
+## 1.0.1
+
+- Stabilized the Hermes-native desktop channel, isolated runtime updates, diagnostics redaction, and reproducible offline packaging.
