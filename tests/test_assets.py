@@ -1,7 +1,7 @@
 from PySide6.QtGui import QImageReader
 
 from digital_pet.config import PROJECT_ROOT
-from digital_pet.pet_window import ANIMATION_LABELS, ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS
+from digital_pet.animation_catalog import ANIMATION_LABELS, ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS
 
 
 def test_expected_recovered_animation_names_are_registered():

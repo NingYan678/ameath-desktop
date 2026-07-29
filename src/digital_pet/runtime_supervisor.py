@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .runtime_descriptor import RuntimeHealth
 
@@ -26,8 +26,9 @@ class _VerificationSignals(QObject):
 class _VerificationTask(QRunnable):
     def __init__(self, runtime: RuntimeBackend) -> None:
         super().__init__()
+        self.setAutoDelete(False)
         self.runtime = runtime
-        self.signals = _VerificationSignals()
+        self.signals = _VerificationSignals(QCoreApplication.instance())
 
     def run(self) -> None:
         try:
@@ -52,6 +53,7 @@ class RuntimeSupervisor(QObject):
         self._verification_active = False
         self._verification_task: _VerificationTask | None = None
         self._connection_allowed = False
+        self._maintenance = False
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._check)
@@ -64,8 +66,21 @@ class RuntimeSupervisor(QObject):
         self._timer.stop()
 
     def reconnect_now(self) -> None:
+        if self._maintenance:
+            return
         self._attempt = 0
         self._check()
+
+    def set_maintenance(self, active: bool) -> None:
+        """Suspend recovery while a controlled Hermes update owns the runtime."""
+        self._maintenance = active
+        self._timer.stop()
+        self._set_connection_allowed(False)
+        if active:
+            self.status_changed.emit("Hermes 更新中…")
+            return
+        self._attempt = 0
+        self._timer.start(50)
 
     def _set_connection_allowed(self, allowed: bool) -> None:
         if allowed != self._connection_allowed:
@@ -73,6 +88,8 @@ class RuntimeSupervisor(QObject):
             self.connection_allowed.emit(allowed)
 
     def _check(self) -> None:
+        if self._maintenance:
+            return
         health = self.runtime.quick_health()
         if health is RuntimeHealth.READY:
             self._attempt = 0

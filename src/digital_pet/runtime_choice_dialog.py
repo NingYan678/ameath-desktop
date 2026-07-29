@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
 
-from .legacy_hermes import HermesInstallation
+from .existing_hermes import HermesInstallation
 
 
 class RuntimeChoiceDialog(QDialog):

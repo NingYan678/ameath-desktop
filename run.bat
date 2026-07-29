@@ -7,7 +7,6 @@ if /i not "%~1"=="--background" (
 )
 
 cd /d "%~dp0"
-set "UV_CACHE_DIR=%CD%\.cache\uv"
 if not exist ".venv\Scripts\pythonw.exe" (
     if not exist "data\logs" mkdir "data\logs"
     uv venv --python 3.12 .venv >> "data\logs\launcher.log" 2>&1

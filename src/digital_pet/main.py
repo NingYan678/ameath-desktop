@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import logging
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import sys
+from typing import TypeAlias
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from .ameath_runtime import AmeathRuntimeService
 from .application_controller import ApplicationController
-from .config import application_root, default_data_root, is_packaged, load_settings
+from .config import Settings, application_root, default_data_root, is_packaged, load_settings
 from .diagnostics import DiagnosticsService
-from .legacy_hermes import BackendSelectionStore, ExistingHermesRuntimeService, ProbeStatus, discover_existing_hermes, probe_hermes_home
+from .existing_hermes import BackendSelectionStore, ExistingHermesRuntimeService, ProbeStatus, discover_existing_hermes, probe_hermes_home
 from .maintenance import reset_user_data
 from .onboarding import OnboardingDialog
 from .pet_window import PetWindow
@@ -19,7 +21,10 @@ from .runtime_choice_dialog import RuntimeChoiceDialog
 from .version import APP_VERSION
 
 
-def _configure_runtime_logging(data_root) -> None:  # type: ignore[no-untyped-def]
+RuntimeService: TypeAlias = AmeathRuntimeService | ExistingHermesRuntimeService
+
+
+def _configure_runtime_logging(data_root: Path) -> None:
     logger = logging.getLogger("digital_pet.runtime")
     logger.setLevel(logging.INFO)
     if logger.handlers:
@@ -34,11 +39,10 @@ def _configure_runtime_logging(data_root) -> None:  # type: ignore[no-untyped-de
         logger.addHandler(logging.NullHandler())
 
 
-def _select_runtime(settings):  # type: ignore[no-untyped-def]
+def _select_runtime(settings: Settings) -> tuple[RuntimeService | None, BackendSelectionStore]:
     store = BackendSelectionStore(settings.data_root)
     plugin_source = (settings.resources_root if is_packaged() else settings.install_root) / "hermes_platform" / "ameath_desktop"
-    saved = store.load()
-    if saved is not None:
+    while (saved := store.load()) is not None:
         mode, home, fingerprint = saved
         if mode == "isolated":
             return AmeathRuntimeService(settings), store
@@ -51,7 +55,7 @@ def _select_runtime(settings):  # type: ignore[no-untyped-def]
                     return None, store
                 if answer == QMessageBox.No:
                     store.clear()
-                    return _select_runtime(settings)
+                    continue
             store.save("shared", installation)
             return ExistingHermesRuntimeService(settings, installation), store
         store.clear()
@@ -78,8 +82,15 @@ def _prepare_shared_runtime(runtime: ExistingHermesRuntimeService) -> bool:
     except (OSError, RuntimeError) as exc:
         QMessageBox.critical(None, "Cannot connect local Hermes", str(exc))
         return False
-    # Identity verification runs in RuntimeSupervisor's background worker.
-    # A shared Hermes is never started, restarted, or terminated during app boot.
+    LOGGER = logging.getLogger("digital_pet.runtime")
+    LOGGER.info(
+        "Shared Hermes desktop plugin prepared: gateway_running=%s desktop_ready=%s changed=%s",
+        result.gateway_running,
+        result.desktop_ready,
+        result.changed,
+    )
+    # Identity verification runs in RuntimeSupervisor's background worker. A
+    # shared Hermes is never started, restarted, or terminated during app boot.
     return True
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from digital_pet.config import Settings
-from digital_pet.legacy_hermes import (
+from digital_pet.existing_hermes import (
     BackendSelectionStore,
     ExistingHermesRuntimeService,
     HermesInstallation,
@@ -20,10 +20,6 @@ def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         asset_root=tmp_path / "assets",
         data_root=tmp_path / "ameath-data",
-        hermes_base_url="",
-        hermes_api_key="",
-        hermes_model="",
-        hermes_timeout_seconds=30,
         hermes_cli_python=tmp_path / "runtime" / "python.exe",
         hermes_cli_launcher=tmp_path / "runtime" / "hermes_cli" / "main.py",
         install_root=tmp_path / "app",
@@ -63,7 +59,7 @@ def test_discovery_uses_environment_home_before_default(monkeypatch, tmp_path):
 
 def test_inspect_requires_all_runtime_files_and_uses_safe_config_check(monkeypatch, tmp_path):
     installation = make_installation(tmp_path, desktop_enabled=True)
-    monkeypatch.setattr("digital_pet.legacy_hermes._inspect_config", lambda *_: True)
+    monkeypatch.setattr("digital_pet.existing_hermes._inspect_config", lambda *_: True)
 
     detected = inspect_hermes_home(installation.home)
 
@@ -81,7 +77,7 @@ def test_shared_prepare_backs_up_and_enables_plugin_only_after_selection(monkeyp
     installation = make_installation(tmp_path)
     runtime = ExistingHermesRuntimeService(settings, installation)
     calls = []
-    monkeypatch.setattr("digital_pet.legacy_hermes._compatible", lambda *_: True)
+    monkeypatch.setattr("digital_pet.existing_hermes._compatible", lambda *_: True)
     monkeypatch.setattr(runtime, "_enable_desktop_plugin", lambda: calls.append("enabled"))
     monkeypatch.setattr(runtime, "quick_health", lambda: RuntimeHealth.STOPPED)
 
@@ -109,7 +105,7 @@ def test_failed_plugin_activation_rolls_back_config_and_new_plugin(monkeypatch, 
     installation = make_installation(tmp_path)
     original = (installation.home / "config.yaml").read_text(encoding="utf-8")
     runtime = ExistingHermesRuntimeService(settings, installation)
-    monkeypatch.setattr("digital_pet.legacy_hermes._compatible", lambda *_: True)
+    monkeypatch.setattr("digital_pet.existing_hermes._compatible", lambda *_: True)
     monkeypatch.setattr(runtime, "_enable_desktop_plugin", lambda: (_ for _ in ()).throw(RuntimeError("write failed")))
 
     with pytest.raises(RuntimeError, match="write failed"):
@@ -130,7 +126,7 @@ def test_failed_plugin_update_restores_an_existing_plugin(monkeypatch, tmp_path)
     existing.mkdir(parents=True)
     (existing / "adapter.py").write_text("old", encoding="utf-8")
     runtime = ExistingHermesRuntimeService(settings, installation)
-    monkeypatch.setattr("digital_pet.legacy_hermes._compatible", lambda *_: True)
+    monkeypatch.setattr("digital_pet.existing_hermes._compatible", lambda *_: True)
     monkeypatch.setattr(runtime, "_enable_desktop_plugin", lambda: (_ for _ in ()).throw(RuntimeError("write failed")))
 
     with pytest.raises(RuntimeError):
@@ -139,9 +135,31 @@ def test_failed_plugin_update_restores_an_existing_plugin(monkeypatch, tmp_path)
     assert (existing / "adapter.py").read_text(encoding="utf-8") == "old"
 
 
+def test_shared_plugin_update_removes_files_retired_from_the_source(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    plugin = settings.install_root / "hermes_platform" / "ameath_desktop"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (plugin / "adapter.py").write_text("new", encoding="utf-8")
+    installation = make_installation(tmp_path, desktop_enabled=True)
+    existing = installation.home / "plugins" / "platforms" / "ameath_desktop"
+    existing.mkdir(parents=True)
+    (existing / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (existing / "adapter.py").write_text("old", encoding="utf-8")
+    (existing / "retired.py").write_text("old code", encoding="utf-8")
+    runtime = ExistingHermesRuntimeService(settings, installation)
+    monkeypatch.setattr("digital_pet.existing_hermes._compatible", lambda *_: True)
+    monkeypatch.setattr(runtime, "quick_health", lambda: RuntimeHealth.STOPPED)
+
+    runtime.prepare()
+
+    assert (existing / "adapter.py").read_text(encoding="utf-8") == "new"
+    assert not (existing / "retired.py").exists()
+
+
 def test_probe_reports_invalid_yaml_without_trying_to_modify_hermes(monkeypatch, tmp_path):
     installation = make_installation(tmp_path)
-    monkeypatch.setattr("digital_pet.legacy_hermes._inspect_config", lambda *_: None)
+    monkeypatch.setattr("digital_pet.existing_hermes._inspect_config", lambda *_: None)
 
     probe = probe_hermes_home(installation.home)
 
@@ -157,6 +175,6 @@ def test_runtime_descriptor_requires_a_verified_pid(monkeypatch, tmp_path):
 
     runtime.settings.desktop_runtime_path.write_text('{"state":"ready","port":1234,"token":"xxxxxxxxxxxxxxxxxxxxxxxx","pid":123}', encoding="utf-8")
     monkeypatch.setattr("digital_pet.runtime_descriptor.pid_is_alive", lambda pid: pid == 123)
-    monkeypatch.setattr("digital_pet.legacy_hermes.pid_belongs_to_runtime", lambda pid, source: pid == 123)
+    monkeypatch.setattr("digital_pet.existing_hermes.pid_belongs_to_runtime", lambda pid, source: pid == 123)
     assert runtime.verify_identity() is RuntimeHealth.READY
     assert runtime.is_gateway_ready()

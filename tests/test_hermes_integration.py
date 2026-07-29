@@ -9,12 +9,12 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.request import urlopen
 
-import httpx
 import pytest
 
 from digital_pet.config import Settings
-from digital_pet.legacy_hermes import ExistingHermesRuntimeService, probe_hermes_home
+from digital_pet.existing_hermes import ExistingHermesRuntimeService, probe_hermes_home
 
 
 INTEGRATION_HOME = os.getenv("HERMES_INTEGRATION_HOME", "").strip()
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(not INTEGRATION_HOME, reason="requires disposabl
 def test_real_hermes_writes_a_pid_runtime_and_serves_health_endpoint():
     root = Path(__file__).parents[1]
     home = Path(INTEGRATION_HOME)
-    settings = Settings(root / "assets", root / "data", "", "", "", 30, Path("missing"), Path("missing"), install_root=root)
+    settings = Settings(root / "assets", root / "data", Path("missing"), Path("missing"), install_root=root)
     probe = probe_hermes_home(home, root / "hermes_platform" / "ameath_desktop")
     assert probe.installation is not None, probe.message
     runtime = ExistingHermesRuntimeService(settings, probe.installation)
@@ -40,7 +40,8 @@ def test_real_hermes_writes_a_pid_runtime_and_serves_health_endpoint():
         assert runtime.is_gateway_ready()
         descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
         assert isinstance(descriptor.get("pid"), int)
-        assert httpx.get(f"http://127.0.0.1:{descriptor['port']}/health", timeout=3).json()["status"] == "ok"
+        with urlopen(f"http://127.0.0.1:{descriptor['port']}/health", timeout=3) as response:
+            assert json.loads(response.read())["status"] == "ok"
     finally:
         descriptor = runtime._runtime_descriptor()
         if descriptor is not None:
