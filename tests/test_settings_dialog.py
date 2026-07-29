@@ -61,6 +61,7 @@ def test_settings_dialog_exposes_a_user_controlled_proactive_interval(tmp_path):
     assert previewed[-1].proactive_max_interval_minutes == 90
     dialog.proactive.setChecked(False)
     assert not dialog.proactive_interval.isEnabled()
+    dialog.close()
 
 
 def test_settings_dialog_saves_preferences_and_stages_global_hermes_update(tmp_path, monkeypatch):
@@ -81,6 +82,7 @@ def test_settings_dialog_saves_preferences_and_stages_global_hermes_update(tmp_p
     assert startup.enabled is False
     assert hermes.applied["personality"] == "helpful"
     assert "browser" in hermes.applied["tools"]
+    dialog.close()
 
 
 def test_settings_dialog_can_save_desktop_without_restarting_hermes(tmp_path, monkeypatch):
@@ -96,6 +98,7 @@ def test_settings_dialog_can_save_desktop_without_restarting_hermes(tmp_path, mo
 
     assert store.load().panel_opacity == 35
     assert not hasattr(hermes, "applied")
+    dialog.close()
 
 
 def test_shared_hermes_settings_do_not_expose_global_hermes_controls(tmp_path):
@@ -114,6 +117,7 @@ def test_shared_hermes_settings_do_not_expose_global_hermes_controls(tmp_path):
     assert not hasattr(dialog, "tools")
     QTest.qWait(30)
     assert not hasattr(hermes, "read_calls")
+    dialog.close()
 
 
 def test_backend_switch_closes_modal_before_running_the_reconfigure_callback(tmp_path):
@@ -135,6 +139,7 @@ def test_backend_switch_closes_modal_before_running_the_reconfigure_callback(tmp
     assert calls == []
     app.processEvents()
     assert calls == ["reconfigure"]
+    dialog.close()
 
 
 def test_isolated_hermes_settings_also_expose_backend_switching(tmp_path):
@@ -154,3 +159,4 @@ def test_isolated_hermes_settings_also_expose_backend_switching(tmp_path):
     dialog._reconfigure_backend()
     app.processEvents()
     assert calls == ["reconfigure"]
+    dialog.close()

@@ -10,7 +10,8 @@
 - 模型密钥使用 Windows 当前账户加密保存，不会显示在桌宠设置或日志中。
 - 在设置页可重新打开“配置模型服务”。
 - 卸载时可选择保留个人设置、记忆与任务，方便日后恢复。
-- 当前版本不提供自动更新；请从受信任的个人安装包手动升级。
+- 爱弥斯会每天检查一次 Hermes 官方 `main` 更新，但只在你确认后安装。共享 Hermes 使用官方 `hermes update`；独立 Hermes 先安装到新目录并验证，失败会恢复旧版本。
+- 爱弥斯应用本身不提供自动升级；程序界面与素材仍需使用受信任的个人安装包手动升级。
 
 本项目中的游戏提取素材仅用于个人本地安装包；请勿公开发布或重新分发 `assets/recovered/` 与 `_reference/`。
 
@@ -32,4 +33,4 @@ python .\packaging\build_release.py --mode offline
 python .\packaging\build_release.py --mode online --runtime-url 'https://your-private-host/Ameath-Hermes-runtime.zip' --runtime-sha256 '<sha256>'
 ```
 
-生成的安装程序位于 `dist/`。联网版安装时会校验运行时 SHA-256 后才解压；离线版无需网络。Hermes 按 MIT 许可证随个人安装包附带。
+生成的安装程序位于 `dist/`。联网版安装时会校验运行时 SHA-256 后才解压；离线版无需网络。构建时固定的 Hermes 提交是可复现的初始基线，安装后的 Hermes 可以独立更新到官方 `main`。Hermes 按 MIT 许可证随个人安装包附带。

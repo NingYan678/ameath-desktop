@@ -55,6 +55,43 @@ def packaged_runtime_python(runtime_root: Path) -> Path:
     return runtime_root / "python" / "python.exe"
 
 
+def active_runtime_root(install_root: Path, data_root: Path) -> Path:
+    """Return a verified user runtime slot, otherwise the bundled baseline."""
+    bundled = install_root / "runtime"
+    pointer = data_root / "runtime_current.json"
+    slots = (data_root / "runtimes").resolve()
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        revision = str(payload["hermes_commit"]).strip().lower()
+        if len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision):
+            return bundled
+        candidate = (slots / revision).resolve()
+        metadata = json.loads((candidate / "runtime_metadata.json").read_text(encoding="utf-8"))
+        if (
+            candidate.is_relative_to(slots)
+            and str(metadata.get("hermes_commit", "")).lower() == revision
+            and (candidate / "hermes-agent" / "hermes_cli" / "main.py").is_file()
+            and packaged_runtime_python(candidate).is_file()
+        ):
+            return candidate
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return bundled
+
+
+def settings_for_runtime(settings: Settings, runtime_root: Path) -> Settings:
+    """Return isolated settings pointing at one immutable runtime slot."""
+    return Settings(
+        asset_root=settings.asset_root,
+        data_root=settings.data_root,
+        hermes_cli_python=packaged_runtime_python(runtime_root),
+        hermes_cli_launcher=runtime_root / "hermes-agent" / "hermes_cli" / "main.py",
+        hermes_home=settings.hermes_home,
+        install_root=settings.install_root,
+        hermes_runtime_root=runtime_root,
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     asset_root: Path
@@ -96,7 +133,8 @@ def load_settings() -> Settings:
         load_dotenv(PROJECT_ROOT / ".env")
     install_root = application_root()
     data_root = default_data_root() if is_packaged() else Path(os.getenv("AMEATH_DATA_HOME", str(PROJECT_ROOT / "data")))
-    runtime_root = Path(os.getenv("AMEATH_RUNTIME_ROOT", str(install_root / "runtime")))
+    default_runtime = active_runtime_root(install_root, data_root) if is_packaged() else install_root / "runtime"
+    runtime_root = Path(os.getenv("AMEATH_RUNTIME_ROOT", str(default_runtime)))
     if is_packaged():
         default_home = data_root / "hermes"
         default_python = packaged_runtime_python(runtime_root)

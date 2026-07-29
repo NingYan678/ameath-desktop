@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from .hermes_settings import MANAGED_TOOLSETS, HermesSettingsService, HermesSettingsSnapshot
+from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateStatus
 from .background_task import FunctionTask, start_task
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
 
@@ -82,6 +83,7 @@ class SettingsDialog(QDialog):
         shared_hermes: bool = False,
         backend_reconfigure: Callable[[], None] | None = None,
         backend_status: str = "",
+        update_controller: HermesUpdateController | None = None,
     ) -> None:
         super().__init__(parent)
         self._initial = preferences
@@ -93,6 +95,7 @@ class SettingsDialog(QDialog):
         self._shared_hermes = shared_hermes
         self._backend_reconfigure = backend_reconfigure
         self._backend_status = backend_status
+        self._update_controller = update_controller
         self._snapshot = HermesSettingsSnapshot("", "auto", "none", (), (), False)
         self._hermes_task: FunctionTask | None = None
         self.setWindowTitle("爱弥斯设置")
@@ -115,6 +118,14 @@ class SettingsDialog(QDialog):
             "QPushButton#applyButton:hover { background: #fff0f7; }"
         )
         self._build_ui()
+        if self._update_controller is not None:
+            self._update_controller.info_changed.connect(self._update_info_changed)
+            self._update_controller.state_changed.connect(self._update_state_changed)
+            self._update_controller.failed.connect(self._update_failed)
+            self._update_controller.completed.connect(self._update_completed)
+            if self._update_controller.info is not None:
+                self._update_info_changed(self._update_controller.info)
+            self._update_state_changed(self._update_controller.state.value)
         if self._hermes is not None and not self._shared_hermes:
             QTimer.singleShot(0, self._load_hermes_async)
 
@@ -220,6 +231,8 @@ class SettingsDialog(QDialog):
         quiet_row.addStretch(1)
         self.diagnostics_consent = QCheckBox("允许匿名崩溃报告（不含聊天、密钥或配置内容）", card)
         self.diagnostics_consent.setChecked(self._initial.diagnostics_consent)
+        self.hermes_update_checks = QCheckBox("每天检查 Hermes 官方更新（安装前仍会确认）", card)
+        self.hermes_update_checks.setChecked(self._initial.hermes_update_checks_enabled)
         self.animation_speed.value_changed.connect(self._preview_current)
         self.auto_collapse.value_changed.connect(self._preview_current)
         self.always_top.toggled.connect(self._preview_current)
@@ -240,6 +253,7 @@ class SettingsDialog(QDialog):
         card_layout.addWidget(self.do_not_disturb)
         card_layout.addLayout(quiet_row)
         card_layout.addWidget(self.diagnostics_consent)
+        card_layout.addWidget(self.hermes_update_checks)
         layout.addWidget(card)
         layout.addStretch(1)
         return tab
@@ -258,6 +272,7 @@ class SettingsDialog(QDialog):
                 button.clicked.connect(self._reconfigure_backend)
                 card.layout().addWidget(button)
             layout.addWidget(card)
+            self._add_update_card(layout)
             layout.addStretch(1)
             return tab
         status = "运行中" if self._snapshot.gateway_running else "未检测到运行中的 Gateway"
@@ -302,8 +317,33 @@ class SettingsDialog(QDialog):
             switch.clicked.connect(self._reconfigure_backend)
             card_layout.addWidget(switch)
         layout.addWidget(card)
+        self._add_update_card(layout)
         layout.addStretch(1)
         return tab
+
+    def _add_update_card(self, layout: QVBoxLayout) -> None:
+        card = self._card(
+            "Hermes 更新",
+            "跟踪 Hermes 官方 main。爱弥斯只会自动检查；下载和安装始终需要你的确认。",
+        )
+        self.update_version_label = QLabel("当前版本：等待检查", card)
+        self.update_version_label.setObjectName("muted")
+        self.update_version_label.setWordWrap(True)
+        row = QHBoxLayout()
+        self.check_update_button = QPushButton("检查更新", card)
+        self.check_update_button.clicked.connect(self._check_hermes_update)
+        self.install_update_button = QPushButton("更新 Hermes", card)
+        self.install_update_button.setEnabled(False)
+        self.install_update_button.clicked.connect(self._apply_hermes_update)
+        row.addWidget(self.check_update_button)
+        row.addWidget(self.install_update_button)
+        row.addStretch(1)
+        card.layout().addWidget(self.update_version_label)
+        card.layout().addLayout(row)
+        if self._update_controller is None:
+            self.check_update_button.setEnabled(False)
+            self.check_update_button.setToolTip("当前运行方式无法安全更新 Hermes")
+        layout.addWidget(card)
 
     def _card(self, title: str, description: str) -> QFrame:
         card = QFrame(self)
@@ -341,6 +381,7 @@ class SettingsDialog(QDialog):
             auto_game_mode=self.auto_game.isChecked(),
             do_not_disturb=self.do_not_disturb.isChecked(),
             diagnostics_consent=self.diagnostics_consent.isChecked(),
+            hermes_update_checks_enabled=self.hermes_update_checks.isChecked(),
         )
 
     def _preview_current(self, *_: object) -> None:
@@ -455,3 +496,76 @@ class SettingsDialog(QDialog):
         self.apply_button.setEnabled(True)
         self._cancel_button.setEnabled(True)
         QMessageBox.warning(self, "Hermes 设置未完全应用", f"桌宠设置已保存。\n\n{message}")
+
+    def _check_hermes_update(self) -> None:
+        if self._update_controller is not None:
+            self._update_controller.check()
+
+    def _apply_hermes_update(self) -> None:
+        controller = self._update_controller
+        info = controller.info if controller is not None else None
+        if controller is None or info is None or not info.update_available:
+            return
+        if self._shared_hermes:
+            branch_note = (
+                f"\n\n当前分支为 {info.current_branch}，更新会切换到官方 main。实验分支和提交仍会保留。"
+                if info.current_branch and info.current_branch != "main"
+                else ""
+            )
+            warning = (
+                "这会运行官方 hermes update，并可能重启该 Hermes 下的其他 Gateway、渠道和任务。"
+                + branch_note
+            )
+        else:
+            warning = "新版本会安装到独立目录；通过启动验证后才切换，失败会自动恢复旧版本。"
+        answer = QMessageBox.question(
+            self,
+            "确认更新 Hermes",
+            warning,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            controller.apply()
+
+    def _update_info_changed(self, value: object) -> None:
+        if not isinstance(value, HermesUpdateInfo) or not hasattr(self, "update_version_label"):
+            return
+        current = value.current_revision[:10] or "未知"
+        target = value.target_revision[:10] or "未知"
+        if value.update_available:
+            text = f"当前：{current}　官方最新：{target}"
+        else:
+            text = f"当前：{current}　已是官方最新版本"
+        self.update_version_label.setText(text)
+        self.install_update_button.setEnabled(value.update_available and not self._update_controller.busy)
+
+    def _update_state_changed(self, value: str) -> None:
+        if not hasattr(self, "check_update_button") or self._update_controller is None:
+            return
+        status = HermesUpdateStatus(value)
+        busy = status in {
+            HermesUpdateStatus.CHECKING,
+            HermesUpdateStatus.UPDATING,
+            HermesUpdateStatus.VERIFYING,
+        }
+        self.check_update_button.setEnabled(not busy)
+        self.install_update_button.setEnabled(
+            not busy and self._update_controller.info is not None and self._update_controller.info.update_available
+        )
+        self.check_update_button.setText("正在检查…" if status is HermesUpdateStatus.CHECKING else "检查更新")
+        if status is HermesUpdateStatus.UPDATING:
+            self.install_update_button.setText("正在更新…")
+        elif status is HermesUpdateStatus.VERIFYING:
+            self.install_update_button.setText("正在验证…")
+        else:
+            self.install_update_button.setText("更新 Hermes")
+
+    def _update_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Hermes 更新未完成", message)
+
+    def _update_completed(self, value: object) -> None:
+        if not isinstance(value, HermesUpdateResult):
+            return
+        message = "Hermes 已更新并重新连接。" if value.updated else "Hermes 已是最新版本。"
+        QMessageBox.information(self, "Hermes 更新", f"{message}\n\n日志：{value.log_path}")

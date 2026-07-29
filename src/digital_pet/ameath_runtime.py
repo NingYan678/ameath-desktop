@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Settings, is_packaged
+from .config import Settings, is_packaged, settings_for_runtime
 from .credentials import CredentialStore
 from .runtime_descriptor import (
     RuntimeFingerprint,
@@ -163,9 +163,32 @@ class AmeathRuntimeService:
 
     def restart_gateway(self) -> bool:
         """Restart only the PID described by this runtime's verified descriptor."""
-        if not stop_verified_runtime(self.settings.desktop_runtime_path, self.settings.hermes_source):
+        if not self.stop_gateway():
             return False
         return self.start_gateway()
+
+    def stop_gateway(self) -> bool:
+        """Stop only the descriptor PID verified against this isolated source."""
+        health = self.quick_health()
+        if health is RuntimeHealth.STOPPED:
+            return True
+        if health is RuntimeHealth.VERIFYING:
+            health = self.verify_identity()
+        if health is not RuntimeHealth.READY:
+            return False
+        stopped = stop_verified_runtime(self.settings.desktop_runtime_path, self.settings.hermes_source)
+        if stopped:
+            self._verified_runtime = None
+            self._checked_runtime = None
+            self._checked_health = RuntimeHealth.STOPPED
+        return stopped
+
+    def switch_runtime(self, runtime_root: Path) -> None:
+        """Point this isolated service at a verified side-by-side runtime."""
+        self.settings = settings_for_runtime(self.settings, runtime_root)
+        self._verified_runtime = None
+        self._checked_runtime = None
+        self._checked_health = RuntimeHealth.STOPPED
 
     def is_gateway_ready(self) -> bool:
         return self.quick_health() is RuntimeHealth.READY

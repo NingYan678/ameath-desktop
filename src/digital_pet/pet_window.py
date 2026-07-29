@@ -19,6 +19,7 @@ from .conversation_panel import ConversationPanel
 from .companion_behavior import CompanionBehavior
 from .hermes_desktop_client import HermesDesktopClient
 from .hermes_settings import HermesSettingsService
+from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateService
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
 from .pet_state import CLICK_INTERACTIONS, DRAG_INTERACTIONS, CompanionInteraction, PetStateEngine, PetStateStore
 from .runtime_supervisor import RuntimeSupervisor
@@ -122,6 +123,17 @@ class PetWindow(QWidget):
         self._supervisor = RuntimeSupervisor(self._runtime, shared=shared_hermes, parent=self)
         self._supervisor.status_changed.connect(self._on_supervisor_status)
         self._supervisor.connection_allowed.connect(self._on_connection_allowed)
+        self._update_controller = HermesUpdateController(
+            HermesUpdateService(self._runtime.settings, shared=shared_hermes),
+            self._runtime,
+            maintenance=self._supervisor.set_maintenance,
+            install_allowed=self._hermes_update_allowed,
+            auto_check=self.preferences.hermes_update_checks_enabled,
+            parent=self,
+        )
+        self._update_controller.update_available.connect(self._on_hermes_update_available)
+        self._update_controller.completed.connect(self._on_hermes_updated)
+        self._update_controller.failed.connect(self._on_hermes_update_failed)
 
         self._settle_timer = QTimer(self)
         self._settle_timer.setSingleShot(True)
@@ -157,6 +169,7 @@ class PetWindow(QWidget):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.pet = QLabel(self)
         self.pet.setAlignment(Qt.AlignCenter)
         self.conversation = ConversationPanel(self)
@@ -210,6 +223,8 @@ class PetWindow(QWidget):
         previous = self.preferences
         self.preferences = preferences
         self._pet_state.update_preferences(preferences)
+        if hasattr(self, "_update_controller"):
+            self._update_controller.set_auto_check(preferences.hermes_update_checks_enabled)
         self.conversation.apply_preferences(preferences)
         for movie in self._movie_cache.values():
             movie.setScaledSize(QSize(preferences.pet_size, preferences.pet_size))
@@ -433,6 +448,7 @@ class PetWindow(QWidget):
         self._rest_timer.start(90_000)
 
     def _on_gateway_connected(self) -> None:
+        self._update_controller.gateway_ready()
         self._react("attention", "已连接到 Hermes。", 1_500, priority=BubblePriority.CHAT)
 
     def _on_gateway_disconnected(self, message: str) -> None:
@@ -618,8 +634,39 @@ class PetWindow(QWidget):
             shared_hermes=self._shared_hermes,
             backend_reconfigure=self._backend_reconfigure,
             backend_status=str(getattr(self._runtime, "status_summary", "")),
+            update_controller=self._update_controller,
         )
         dialog.exec()
+
+    def _hermes_update_allowed(self) -> bool:
+        return (
+            self._pending_action is None
+            and not self.conversation.is_streaming
+            and self._drag_offset is None
+        )
+
+    def _on_hermes_update_available(self, value: object) -> None:
+        if isinstance(value, HermesUpdateInfo):
+            self._speak(
+                f"Hermes 有新版本 {value.target_revision[:8]}，可以在设置里确认更新。",
+                BubblePriority.CHAT,
+            )
+
+    def _on_hermes_updated(self, value: object) -> None:
+        if not isinstance(value, HermesUpdateResult):
+            return
+        self.settings = self._runtime.settings
+        if not self._shared_hermes:
+            self._hermes_settings = HermesSettingsService(
+                self.settings.hermes_home,
+                python=self.settings.hermes_cli_python,
+                source=self.settings.hermes_source,
+                restart_handler=self._runtime.restart_gateway,
+            )
+        self._speak("Hermes 已更新并重新连接。", BubblePriority.CHAT)
+
+    def _on_hermes_update_failed(self, message: str) -> None:
+        LOGGER.warning("Hermes update failed: %s", message)
 
     def open_onboarding(self) -> None:
         from .onboarding import OnboardingDialog
@@ -637,9 +684,16 @@ class PetWindow(QWidget):
             self._react("sad", "Hermes Gateway 尚未就绪。", 3_000, priority=BubblePriority.ERROR)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._update_controller.busy:
+            self._speak("Hermes 正在更新或验证，完成前请不要退出。", BubblePriority.ERROR)
+            event.ignore()
+            return
         if self._close_handler is not None and self._close_handler():
             event.ignore()
             return
+        # No timer may call back into a partially destroyed native window.
+        for timer in self.findChildren(QTimer):
+            timer.stop()
         self._supervisor.stop()
         self._gateway.close()
         super().closeEvent(event)

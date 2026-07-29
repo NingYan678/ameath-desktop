@@ -11,7 +11,7 @@ from .storage import atomic_write_json
 
 @dataclass(frozen=True)
 class DesktopPreferences:
-    schema_version: int = 4
+    schema_version: int = 5
     pet_size: int = 200
     compact_width: int = 360
     expanded_width: int = 520
@@ -29,7 +29,7 @@ class DesktopPreferences:
     quiet_end_hour: int = 8
     auto_game_mode: bool = True
     do_not_disturb: bool = False
-    update_channel: str = "stable"
+    hermes_update_checks_enabled: bool = True
     diagnostics_consent: bool = False
     window_screen: str = ""
     window_x: int = -1
@@ -77,7 +77,7 @@ class UISettingsStore:
             quiet_end_hour=self._bounded_int(payload.get("quiet_end_hour"), defaults.quiet_end_hour, 0, 23),
             auto_game_mode=bool(payload.get("auto_game_mode", defaults.auto_game_mode)),
             do_not_disturb=bool(payload.get("do_not_disturb", defaults.do_not_disturb)),
-            update_channel=str(payload.get("update_channel", defaults.update_channel)) if payload.get("update_channel") in {"stable", "beta"} else defaults.update_channel,
+            hermes_update_checks_enabled=bool(payload.get("hermes_update_checks_enabled", defaults.hermes_update_checks_enabled)),
             diagnostics_consent=bool(payload.get("diagnostics_consent", defaults.diagnostics_consent)),
             window_screen=str(payload.get("window_screen", defaults.window_screen)),
             window_x=self._bounded_int(payload.get("window_x"), defaults.window_x, -1, 32_000),

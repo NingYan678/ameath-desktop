@@ -23,7 +23,7 @@ from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HERMES_COMMIT = "ed005e482a8feaa8eecedaf24edb90a25e93567c"
+BUNDLED_HERMES_COMMIT = "ed005e482a8feaa8eecedaf24edb90a25e93567c"
 APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
@@ -110,7 +110,7 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     # runtime, so an editable install is the supported production layout here.
     run(
         "uv", "pip", "install", "--break-system-packages", "--link-mode", "copy", "--python", str(interpreter),
-        "-e", str(source_target), "aiohttp==3.14.1",
+        "-e", str(source_target), "aiohttp==3.14.1", "pip",
     )
     prefix = Path(subprocess.check_output([str(interpreter), "-c", "import sys; print(sys.prefix)"], text=True).strip()).resolve()
     if not prefix.is_relative_to(runtime.resolve()):
@@ -119,7 +119,16 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     if not hermes_module.is_relative_to(runtime.resolve()):
         raise RuntimeError("staged Hermes source resolved outside the release staging directory")
     (runtime / "runtime_metadata.json").write_text(
-        json.dumps({"python_relative_path": interpreter.relative_to(runtime).as_posix(), "hermes_commit": HERMES_COMMIT, "python_version": python_version}, indent=2) + "\n",
+        json.dumps(
+            {
+                "python_relative_path": interpreter.relative_to(runtime).as_posix(),
+                "hermes_commit": BUNDLED_HERMES_COMMIT,
+                "bundled_hermes_commit": BUNDLED_HERMES_COMMIT,
+                "python_version": python_version,
+                "source_url": "https://github.com/NousResearch/hermes-agent.git",
+            },
+            indent=2,
+        ) + "\n",
         encoding="utf-8",
     )
     license_path = hermes_source / "LICENSE"
@@ -142,7 +151,15 @@ def make_online_runtime(stage: Path, runtime_url: str, runtime_sha256: str) -> N
     runtime = stage / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     (runtime / "runtime_manifest.json").write_text(
-        json.dumps({"url": runtime_url, "sha256": runtime_sha256, "hermes_commit": HERMES_COMMIT}, indent=2) + "\n",
+        json.dumps(
+            {
+                "url": runtime_url,
+                "sha256": runtime_sha256,
+                "hermes_commit": BUNDLED_HERMES_COMMIT,
+                "bundled_hermes_commit": BUNDLED_HERMES_COMMIT,
+            },
+            indent=2,
+        ) + "\n",
         encoding="utf-8",
     )
     shutil.copy2(ROOT / "packaging" / "runtime-bootstrap.ps1", runtime / "runtime-bootstrap.ps1")
@@ -180,8 +197,10 @@ def main() -> int:
         ).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError("--hermes-source must be a Git checkout pinned to the required Hermes commit.") from exc
-    if commit != HERMES_COMMIT:
-        raise RuntimeError(f"--hermes-source is {commit}, expected pinned Hermes commit {HERMES_COMMIT}.")
+    if commit != BUNDLED_HERMES_COMMIT:
+        raise RuntimeError(
+            f"--hermes-source is {commit}, expected bundled Hermes baseline {BUNDLED_HERMES_COMMIT}."
+        )
     if dirty:
         raise RuntimeError("--hermes-source must have a clean working tree for a reproducible build.")
     build_root = ROOT / "build" / "installer" if args.keep_build else Path(tempfile.mkdtemp(prefix="ameath-release-"))

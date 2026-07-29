@@ -56,7 +56,10 @@ def test_release_runtime_is_installed_inside_staging_and_pinned_to_hermes_commit
     assert '"--no-bin"' in build
     assert "UV_PYTHON_INSTALL_DIR" in build
     assert '"--link-mode", "copy"' in build
+    assert '"aiohttp==3.14.1", "pip"' in build
     assert "runtime_metadata.json" in build
+    assert "BUNDLED_HERMES_COMMIT" in build
+    assert '"bundled_hermes_commit"' in build
     assert "rev-parse" in build
     assert '"--untracked-files=all"' in build
     assert "is_relative_to(runtime.resolve())" in build
