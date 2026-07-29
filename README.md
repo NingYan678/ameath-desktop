@@ -38,6 +38,7 @@ python .\packaging\build_release.py --hermes-source 'C:\path\to\clean\hermes-age
 Hermes 的技能、记忆、工具和操作确认仍由 Hermes Gateway 管理，桌宠不另建任务或权限系统。项目代码使用 MIT 许可证，详见 [LICENSE](LICENSE)。角色名称、角色图像、音频和 `assets/recovered/` 中的衍生素材不包含在代码许可证内，详见 [NOTICE.md](NOTICE.md)。
 
 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布验收步骤见 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)。
+完整的安装、日常操作、Hermes 更新、隐私、故障排查与开发说明见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
 
 ## 1.1.0 说明
 
