@@ -48,6 +48,7 @@ class HermesUpdateController(QObject):
         self._install_allowed = install_allowed
         self._auto_check = auto_check
         self._gateway_ready = False
+        self._suspended = False
         self._state = HermesUpdateStatus.IDLE
         self._info: HermesUpdateInfo | None = None
         self._task: FunctionTask | None = None
@@ -80,13 +81,20 @@ class HermesUpdateController(QObject):
         elif not enabled:
             self._timer.stop()
 
+    def set_suspended(self, suspended: bool) -> None:
+        self._suspended = suspended
+        if suspended:
+            self._timer.stop()
+        elif self._auto_check and self._gateway_ready and not self._timer.isActive():
+            self._timer.start(60_000)
+
     def gateway_ready(self) -> None:
         self._gateway_ready = True
-        if self._auto_check and not self._timer.isActive():
+        if self._auto_check and not self._suspended and not self._timer.isActive():
             self._timer.start(60_000)
 
     def check(self, *, silent: bool = False) -> bool:
-        if self.busy:
+        if self.busy or self._suspended:
             return False
         self._set_state(HermesUpdateStatus.CHECKING)
         self._task = start_task(
@@ -97,7 +105,7 @@ class HermesUpdateController(QObject):
         return True
 
     def apply(self) -> bool:
-        if self.busy or self._info is None or not self._info.update_available:
+        if self.busy or self._suspended or self._info is None or not self._info.update_available:
             return False
         if not self._install_allowed():
             self.failed.emit("Hermes 正在处理消息或等待确认，请完成后再更新。")
@@ -112,7 +120,7 @@ class HermesUpdateController(QObject):
         return True
 
     def _automatic_check(self) -> None:
-        if self._auto_check and self.service.state_store.check_due():
+        if self._auto_check and not self._suspended and self.service.state_store.check_due():
             self.check(silent=True)
         elif self._auto_check:
             self._timer.start(60 * 60 * 1_000)
@@ -134,7 +142,7 @@ class HermesUpdateController(QObject):
                     )
                 )
                 self.update_available.emit(self._info)
-        if self._auto_check:
+        if self._auto_check and not self._suspended:
             self._timer.start(int(CHECK_INTERVAL.total_seconds() * 1_000))
 
     def _check_failed(self, message: str, silent: bool) -> None:
@@ -142,7 +150,7 @@ class HermesUpdateController(QObject):
         self._set_state(HermesUpdateStatus.FAILED)
         if not silent:
             self.failed.emit(message)
-        if self._auto_check:
+        if self._auto_check and not self._suspended:
             self._timer.start(int(OFFLINE_RETRY_INTERVAL.total_seconds() * 1_000))
 
     def _applied(self, result: object) -> None:

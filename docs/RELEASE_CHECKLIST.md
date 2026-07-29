@@ -1,27 +1,8 @@
 # Ameath release checklist
 
-## Before building
-
-- Confirm the Ameath worktree is clean and `VERSION` contains the intended
-  release.
-- Use a clean Hermes checkout at the commit declared by
-  `packaging/build_release.py`; do not build from a dirty personal Hermes tree.
-- Run Ruff, compileall, `pip check`, and the full pytest suite.
-
-## Build
-
-```powershell
-python .\packaging\build_release.py --hermes-source 'C:\path\to\clean\hermes-agent'
-```
-
-The script uses a temporary staging directory and removes it after success or
-failure. It produces `dist/Ameath-<version>-offline-setup.exe`.
-
-## Verify
-
-- Check the installer filename, embedded application version, and SHA-256.
-- Install into an isolated test data directory and exercise startup, tray,
-  chat, active interactions, Hermes connection, update checks, and uninstall.
-- Test an in-place upgrade while retaining user settings and credentials.
-- Record the installer checksum in `BACKUP_MANIFEST.md` only after the smoke
-  test passes.
+1. Run `python -m compileall -q src tests packaging hermes_platform`, Ruff, pytest, and `pip check` on Windows Python 3.12.
+2. Check out the pinned Hermes baseline in a clean temporary clone; never modify a user's Hermes checkout.
+3. Build the offline installer and verify the exact versioned `.exe`, `.sha256`, asset manifest, runtime metadata, and staging cleanup.
+4. If signing secrets are available, sign `Ameath.exe` and the installer with SHA-256 and a trusted timestamp. Otherwise label the release unsigned.
+5. Test clean install, upgrade, uninstall data retention, Hermes update isolation, proactive replies, sleep/wake, reduced motion, and application update verification.
+6. Create an annotated tag and draft GitHub Release; re-download the assets and compare their SHA-256 before publishing.

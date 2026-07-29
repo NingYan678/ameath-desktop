@@ -137,6 +137,7 @@ class ConversationPanel(QWidget):
     action_confirmed = Signal()
     action_cancelled = Signal()
     settings_requested = Signal()
+    proactive_response_requested = Signal()
 
     MAX_MESSAGES = 10
     COMPACT_WIDTH = 360
@@ -155,6 +156,7 @@ class ConversationPanel(QWidget):
         self._draft_render_timer.setInterval(80)
         self._draft_render_timer.timeout.connect(self._flush_draft_render)
         self._status_text = "正在连接 Hermes Gateway…"
+        self._proactive_prompt = ""
         self._compact_width = self.COMPACT_WIDTH
         self._expanded_width = self.EXPANDED_WIDTH
         self._compact_height = self.COMPACT_HEIGHT
@@ -302,6 +304,24 @@ class ConversationPanel(QWidget):
             self.expand()
         self._render_status()
 
+    def show_proactive_prompt(self, question: str) -> None:
+        self._proactive_prompt = question.strip()
+        self.respond_button.setVisible(bool(self._proactive_prompt) and not self._expanded)
+        self._render_status()
+
+    def clear_proactive_prompt(self) -> None:
+        self._proactive_prompt = ""
+        self.respond_button.hide()
+        self.composer.setPlaceholderText("和爱弥斯说点什么…（Enter 发送，Shift+Enter 换行）")
+
+    def begin_proactive_reply(self) -> None:
+        if not self._proactive_prompt:
+            return
+        prompt = self._proactive_prompt.replace("\n", " ").strip()
+        self.composer.setPlaceholderText(f"回应：{prompt[:48]}")
+        self.respond_button.hide()
+        self.expand(focus_input=True)
+
     def show_action(self, question: str, primary_label: str, cancel_label: str) -> None:
         self._streaming = False
         self._status_text = "Hermes 需要你的确认"
@@ -370,10 +390,18 @@ class ConversationPanel(QWidget):
         self.expand_button = IconButton("expand", "展开对话", self.compact_frame)
         self.expand_button.setObjectName("iconButton")
         self.expand_button.setFixedSize(30, 30)
+        self.respond_button = QPushButton("回应", self.compact_frame)
+        self.respond_button.setObjectName("primaryButton")
+        self.respond_button.setAccessibleDescription("Proactive reply opens the conversation and keeps Ameath's question in context.")
+        self.respond_button.setAccessibleName("回应爱弥斯的主动提问")
+        self.respond_button.setToolTip("回应爱弥斯刚才的问题")
+        self.respond_button.setFixedHeight(26)
+        self.respond_button.hide()
         compact_header.addWidget(compact_avatar)
         compact_header.addWidget(compact_title)
         compact_header.addWidget(compact_subtitle)
         compact_header.addStretch(1)
+        compact_header.addWidget(self.respond_button)
         compact_header.addWidget(self.expand_button)
         self.compact_user = QLabel(self.compact_frame)
         self.compact_assistant = QLabel(self.compact_frame)
@@ -388,6 +416,7 @@ class ConversationPanel(QWidget):
         compact_layout.addWidget(self.compact_assistant)
         self.root_layout.addWidget(self.compact_frame)
         self.expand_button.clicked.connect(self.expand)
+        self.respond_button.clicked.connect(self.proactive_response_requested.emit)
         self.compact_frame.clicked.connect(self.expand)
 
         self.expanded_frame = QFrame(self)
@@ -452,6 +481,8 @@ class ConversationPanel(QWidget):
         self.cancel_button = QPushButton("拒绝", self.action_bar)
         self.confirm_button.setObjectName("primaryButton")
         self.cancel_button.setObjectName("secondaryButton")
+        self.confirm_button.setAccessibleName("Confirm Hermes action")
+        self.cancel_button.setAccessibleName("Cancel Hermes action")
         action_buttons.addStretch(1)
         action_buttons.addWidget(self.cancel_button)
         action_buttons.addWidget(self.confirm_button)
@@ -465,6 +496,7 @@ class ConversationPanel(QWidget):
         composer_layout = QHBoxLayout()
         self.composer = ChatComposer(self.expanded_frame)
         self.composer.setObjectName("composer")
+        self.composer.setAccessibleName("Message to Hermes")
         self.composer.setPlaceholderText("和爱弥斯说点什么…（Enter 发送，Shift+Enter 换行）")
         self.composer.setFixedHeight(50)
         self.send_button = IconButton("send", "发送消息", self.expanded_frame)
@@ -484,6 +516,7 @@ class ConversationPanel(QWidget):
         self._watch_activity(self.composer)
         self._watch_activity(self.send_button)
         self._watch_activity(self.expand_button)
+        self._watch_activity(self.respond_button)
         self._watch_activity(self.collapse_button)
         self._watch_activity(self.confirm_button)
         self._watch_activity(self.cancel_button)
@@ -493,6 +526,7 @@ class ConversationPanel(QWidget):
         if not message.strip():
             return
         self.clear_composer()
+        self.clear_proactive_prompt()
         self.message_submitted.emit(message.strip())
         self.activity.emit()
 

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
@@ -24,7 +25,7 @@ def test_release_uses_one_version_source():
     build = (ROOT / "packaging" / "build_release.py").read_text(encoding="utf-8")
     installer = (ROOT / "packaging" / "Ameath.iss").read_text(encoding="utf-8")
 
-    assert version == "1.0.1"
+    assert version == "1.1.0"
     assert "/DAppVersion={APP_VERSION}" in build
     assert "Ameath-{#AppVersion}-offline-setup" in installer
     assert "#ifndef AppVersion" in installer
@@ -70,3 +71,14 @@ def test_release_runtime_is_installed_inside_staging_and_pinned_to_hermes_commit
     assert "import hermes_cli" in build
     assert "--version-file" in build
     assert "--icon" in build
+
+
+def test_companion_content_catalog_is_versioned_and_complete():
+    path = ROOT / "assets" / "content" / "companion_zh-CN.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["locale"] == "zh-CN"
+    events = payload["proactive_events"]
+    ids = [item["event_id"] for item in [*events, *payload["click_interactions"], *payload["drag_interactions"]]]
+    assert len(ids) == len(set(ids))
+    assert 0.15 <= sum(item.get("expects_reply", False) for item in events) / len(events) <= 0.35
+    assert "prepare_content(stage)" in (ROOT / "packaging" / "build_release.py").read_text(encoding="utf-8")
