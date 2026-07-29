@@ -12,4 +12,3 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 _reference/
-assets/recovered/
