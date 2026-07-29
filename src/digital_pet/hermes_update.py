@@ -207,10 +207,12 @@ class HermesUpdateService:
             raise RuntimeError("Hermes 工作区存在未提交修改。请先提交、暂存或放弃这些修改，再进行更新。")
         if not (source / ".git").exists():
             raise RuntimeError("共享 Hermes 不是可验证的 Git 工作区。")
+        self._validate_shared_python()
         return self._git("branch", "--show-current").strip(), origin
 
     def _apply_shared(self, info: HermesUpdateInfo, log_path: Path) -> HermesUpdateResult:
         branch, _ = self.shared_preflight()
+        original_revision = info.current_revision
         environment = os.environ.copy()
         environment["HERMES_HOME"] = str(self.settings.hermes_home)
         command = [
@@ -221,26 +223,70 @@ class HermesUpdateService:
             "--branch",
             "main",
         ]
-        result = self._run_command(
-            command,
-            cwd=self.settings.hermes_source,
-            env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=1_800,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-        )
+        try:
+            result = self._run_command(
+                command,
+                cwd=self.settings.hermes_source,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1_800,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+        except Exception:
+            self._restore_shared_revision(branch, original_revision, log_path)
+            raise
         self._write_log(log_path, command, result.stdout, result.stderr)
         if result.returncode:
+            self._restore_shared_revision(branch, original_revision, log_path)
             raise RuntimeError(f"Hermes 更新失败（退出码 {result.returncode}）。详情见：{log_path}")
         self._report_progress(HermesUpdateStatus.VERIFYING)
         current = self.current_revision()
         if current != info.target_revision:
+            self._restore_shared_revision(branch, original_revision, log_path)
             raise RuntimeError(f"Hermes 更新结束，但版本验证失败。更新前分支：{branch or '(detached)'}；详情见：{log_path}")
         return HermesUpdateResult(info.current_revision, current, True, log_path)
+
+    def _validate_shared_python(self) -> None:
+        """Reject known-broken venvs before the upstream updater can mutate Git."""
+        interpreter = self.settings.hermes_cli_python
+        if not interpreter.is_file():
+            raise RuntimeError(f"Hermes Python interpreter was not found: {interpreter}")
+        site_packages = interpreter.parent.parent / "Lib" / "site-packages"
+        if not site_packages.is_dir():
+            return
+        invalid: list[str] = []
+        for metadata in site_packages.glob("*.dist-info"):
+            metadata_file = metadata / "METADATA"
+            if not metadata_file.is_file():
+                invalid.append(metadata.name)
+                continue
+            try:
+                with metadata_file.open(encoding="utf-8", errors="replace") as stream:
+                    first_line = stream.readline()
+            except OSError:
+                invalid.append(metadata.name)
+                continue
+            if not first_line.lower().startswith("metadata-version:") or not first_line.split(":", 1)[1].strip():
+                invalid.append(metadata.name)
+        invalid.extend(entry.name for entry in site_packages.iterdir() if entry.name.startswith("~"))
+        if invalid:
+            sample = ", ".join(sorted(invalid)[:4])
+            raise RuntimeError(f"Hermes virtual environment has invalid package metadata: {sample}")
+
+    def _restore_shared_revision(self, branch: str, revision: str, log_path: Path) -> None:
+        """Restore the exact pre-update branch and commit after an updater failure."""
+        if branch:
+            self._git("switch", "--discard-changes", branch)
+        else:
+            self._git("switch", "--detach", "--discard-changes", revision)
+        self._git("reset", "--hard", revision)
+        self._git("clean", "-fd")
+        with log_path.open("a", encoding="utf-8") as output:
+            output.write(f"\n[rollback] restored {branch or '(detached)'} at {revision}\n")
 
     def _apply_isolated(
         self,

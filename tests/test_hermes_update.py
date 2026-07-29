@@ -102,6 +102,43 @@ def test_shared_update_refuses_a_dirty_worktree(tmp_path):
     assert not any("update" in call for call in runner.calls)
 
 
+def test_shared_update_refuses_a_broken_virtual_environment(tmp_path):
+    settings = make_settings(tmp_path)
+    site_packages = settings.hermes_cli_python.parent.parent / "Lib" / "site-packages"
+    broken = site_packages / "annotated_doc-0.0.4.dist-info"
+    broken.mkdir(parents=True)
+    (broken / "REQUESTED").touch()
+    runner = CommandRunner()
+    service = HermesUpdateService(settings, shared=True, run_command=runner)
+
+    with pytest.raises(RuntimeError, match="invalid package metadata"):
+        service.apply(object())
+
+    assert not any("update" in call for call in runner.calls)
+
+
+def test_failed_shared_update_restores_original_branch_and_revision(tmp_path):
+    settings = make_settings(tmp_path)
+
+    class FailingRunner(CommandRunner):
+        def __call__(self, command, **kwargs):
+            command = [str(item) for item in command]
+            self.calls.append(command)
+            if " update " in f" {' '.join(command)} ":
+                return subprocess.CompletedProcess(command, 1, "partial update", "dependency failure")
+            return super().__call__(command, **kwargs)
+
+    runner = FailingRunner()
+    service = HermesUpdateService(settings, shared=True, run_command=runner)
+
+    with pytest.raises(RuntimeError, match="Hermes"):
+        service.apply(object())
+
+    assert any(call[-3:] == ["switch", "--discard-changes", "codex/local-experiment"] for call in runner.calls)
+    assert any(call[-3:] == ["reset", "--hard", OLD] for call in runner.calls)
+    assert any(call[-2:] == ["clean", "-fd"] for call in runner.calls)
+
+
 def test_update_state_uses_daily_checks_and_six_hour_retry(tmp_path):
     store = HermesUpdateStateStore(tmp_path)
     now = datetime.now(timezone.utc)
