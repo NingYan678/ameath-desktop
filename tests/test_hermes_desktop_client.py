@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from digital_pet.config import Settings
-from digital_pet.hermes_desktop_client import HermesDesktopClient
+from digital_pet.hermes_desktop_client import HermesDesktopClient, format_proactive_reply
 
 
 class FakeSocket:
@@ -33,3 +33,19 @@ def test_disconnect_clears_endpoint_so_the_same_gateway_can_reconnect(tmp_path):
 
     assert client._endpoint
     assert len(socket.opened) == 1
+
+
+def test_proactive_reply_is_embedded_in_text_for_older_plugins():
+    context = {"kind": "proactive_reply", "event_id": "morning-plan", "prompt": "今天想先完成什么？"}
+
+    formatted = format_proactive_reply("我想先整理桌面。", context)
+
+    assert "【爱弥斯主动提问】" in formatted
+    assert "爱弥斯：今天想先完成什么？" in formatted
+    assert "用户回答：我想先整理桌面。" in formatted
+    assert formatted.count("爱弥斯主动提问") == 1
+
+
+def test_proactive_reply_is_not_wrapped_without_valid_context():
+    assert format_proactive_reply("普通消息", None) == "普通消息"
+    assert format_proactive_reply("普通消息", {"kind": "proactive_reply", "prompt": "问题"}) == "普通消息"

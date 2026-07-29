@@ -20,6 +20,7 @@ PLATFORM_NAME = "ameath_desktop"
 CHAT_ID = "desktop"
 CUE_CHAT_ID = "desktop-cue"
 RUNTIME_FILENAME = "ameath_desktop_runtime.json"
+PROACTIVE_REPLY_HEADER = "【爱弥斯主动提问】"
 
 
 class AmeathDesktopAdapter(BasePlatformAdapter):
@@ -223,8 +224,11 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
                     prompt = context.get("prompt")
                     event_id = context.get("event_id")
                     if isinstance(prompt, str) and isinstance(event_id, str) and len(prompt) <= 180 and len(event_id) <= 80:
-                        text = f"[爱弥斯刚才问：{prompt.strip()}]\n用户回答：{text.strip()}"
-                        metadata["proactive_reply"] = {"event_id": event_id, "prompt": prompt.strip()}
+                        prompt = prompt.strip()
+                        prefix = f"{PROACTIVE_REPLY_HEADER}\n爱弥斯：{prompt}\n用户回答："
+                        if not text.startswith(prefix):
+                            text = f"{prefix}{text.strip()}\n请结合爱弥斯刚才的问题回答，不要解释这段标记格式。"
+                        metadata["proactive_reply"] = {"event_id": event_id, "prompt": prompt}
                 event = MessageEvent(
                     text=text.strip(),
                     message_type=MessageType.TEXT,

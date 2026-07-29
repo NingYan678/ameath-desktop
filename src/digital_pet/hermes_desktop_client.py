@@ -12,6 +12,30 @@ from PySide6.QtWebSockets import QWebSocket
 from .config import Settings
 from .runtime_descriptor import read_runtime_descriptor
 
+PROACTIVE_REPLY_HEADER = "【爱弥斯主动提问】"
+
+
+def format_proactive_reply(text: str, context: dict[str, str] | None) -> str:
+    """Make a proactive question visible even to an older desktop plugin.
+
+    New plugins also receive the structured context field, but older installed
+    plugins only forward the message text.  Keeping the context in both places
+    makes the interaction upgrade-safe without requiring a shared Gateway
+    restart before the user can answer.
+    """
+    if not context or context.get("kind") != "proactive_reply":
+        return text
+    prompt = context.get("prompt", "").strip()
+    event_id = context.get("event_id", "").strip()
+    if not prompt or not event_id or len(prompt) > 180 or len(event_id) > 80:
+        return text
+    return (
+        f"{PROACTIVE_REPLY_HEADER}\n"
+        f"爱弥斯：{prompt}\n"
+        f"用户回答：{text.strip()}\n"
+        "请结合爱弥斯刚才的问题回答，不要解释这段标记格式。"
+    )
+
 
 class HermesDesktopClient(QObject):
     """Connects to the running Hermes Gateway; it never starts an agent."""
@@ -55,7 +79,7 @@ class HermesDesktopClient(QObject):
         return self._socket.isValid()
 
     def send_user_message(self, text: str, *, context: dict[str, str] | None = None) -> bool:
-        payload: dict[str, Any] = {"type": "user_message", "text": text}
+        payload: dict[str, Any] = {"type": "user_message", "text": format_proactive_reply(text, context)}
         if context:
             payload["context"] = context
         return self._send(payload)
