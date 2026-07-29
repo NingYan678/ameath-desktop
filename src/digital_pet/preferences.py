@@ -11,7 +11,7 @@ from .storage import atomic_write_json
 
 @dataclass(frozen=True)
 class DesktopPreferences:
-    schema_version: int = 6
+    schema_version: int = 7
     pet_size: int = 200
     compact_width: int = 360
     expanded_width: int = 520
@@ -30,6 +30,12 @@ class DesktopPreferences:
     auto_game_mode: bool = True
     do_not_disturb: bool = False
     hermes_update_checks_enabled: bool = True
+    memory_cues_enabled: bool = False
+    memory_consent_version: int = 0
+    reduced_motion: bool = False
+    low_power_mode: str = "auto"
+    follow_system_high_contrast: bool = True
+    app_update_checks_enabled: bool = True
     window_screen: str = ""
     window_x: int = -1
     window_y: int = -1
@@ -77,6 +83,12 @@ class UISettingsStore:
             auto_game_mode=bool(payload.get("auto_game_mode", defaults.auto_game_mode)),
             do_not_disturb=bool(payload.get("do_not_disturb", defaults.do_not_disturb)),
             hermes_update_checks_enabled=bool(payload.get("hermes_update_checks_enabled", defaults.hermes_update_checks_enabled)),
+            memory_cues_enabled=bool(payload.get("memory_cues_enabled", defaults.memory_cues_enabled)),
+            memory_consent_version=self._bounded_int(payload.get("memory_consent_version"), defaults.memory_consent_version, 0, 1),
+            reduced_motion=bool(payload.get("reduced_motion", defaults.reduced_motion)),
+            low_power_mode=self._choice(payload.get("low_power_mode"), defaults.low_power_mode, {"auto", "on", "off"}),
+            follow_system_high_contrast=bool(payload.get("follow_system_high_contrast", defaults.follow_system_high_contrast)),
+            app_update_checks_enabled=bool(payload.get("app_update_checks_enabled", defaults.app_update_checks_enabled)),
             window_screen=str(payload.get("window_screen", defaults.window_screen)),
             window_x=self._bounded_int(payload.get("window_x"), defaults.window_x, -1, 32_000),
             window_y=self._bounded_int(payload.get("window_y"), defaults.window_y, -1, 32_000),
@@ -91,6 +103,10 @@ class UISettingsStore:
             return max(minimum, min(maximum, int(value)))
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _choice(value: object, default: str, choices: set[str]) -> str:
+        return value if isinstance(value, str) and value in choices else default
 
 
 class StartupManager:
