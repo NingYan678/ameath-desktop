@@ -30,7 +30,9 @@ class HermesDesktopClient(QObject):
         self._socket.textMessageReceived.connect(self._on_message)
         self._socket.errorOccurred.connect(self._on_error)
         self._retry_timer = QTimer(self)
-        self._retry_timer.setInterval(1_500)
+        self._retry_delays = (1_500, 3_000, 6_000, 12_000, 30_000)
+        self._retry_index = 0
+        self._retry_timer.setInterval(self._retry_delays[0])
         self._retry_timer.timeout.connect(self._connect_if_possible)
 
     def start(self) -> None:
@@ -39,6 +41,8 @@ class HermesDesktopClient(QObject):
         self.retry_now()
 
     def retry_now(self) -> None:
+        self._retry_index = 0
+        self._retry_timer.setInterval(self._retry_delays[0])
         self._endpoint = ""
         self._connect_if_possible()
 
@@ -50,8 +54,20 @@ class HermesDesktopClient(QObject):
     def is_connected(self) -> bool:
         return self._socket.isValid()
 
-    def send_user_message(self, text: str) -> bool:
-        return self._send({"type": "user_message", "text": text})
+    def send_user_message(self, text: str, *, context: dict[str, str] | None = None) -> bool:
+        payload: dict[str, Any] = {"type": "user_message", "text": text}
+        if context:
+            payload["context"] = context
+        return self._send(payload)
+
+    def request_companion_cue(self, request_id: str, categories: tuple[str, ...]) -> bool:
+        return self._send(
+            {
+                "type": "companion_cue_request",
+                "request_id": request_id,
+                "categories": list(categories),
+            }
+        )
 
     def resolve_approval(self, session_key: str, choice: str) -> bool:
         return self._send({"type": "approval", "session_key": session_key, "choice": choice})
@@ -90,16 +106,26 @@ class HermesDesktopClient(QObject):
         return (descriptor.port, descriptor.token) if descriptor is not None else None
 
     def _on_connected(self) -> None:
+        self._retry_index = 0
+        self._retry_timer.setInterval(self._retry_delays[0])
         self.connected.emit()
 
     def _on_disconnected(self) -> None:
         self._endpoint = ""
+        self._schedule_retry()
         self.disconnected.emit("Hermes Gateway 暂未连接，正在等待它恢复。")
 
     def _on_error(self, _error: object) -> None:
         if not self._socket.isValid():
             self._endpoint = ""
+            self._schedule_retry()
             self.disconnected.emit("正在连接 Hermes Gateway…")
+
+    def _schedule_retry(self) -> None:
+        self._retry_timer.setInterval(self._retry_delays[self._retry_index])
+        self._retry_index = min(self._retry_index + 1, len(self._retry_delays) - 1)
+        if not self._retry_timer.isActive():
+            self._retry_timer.start()
 
     def _on_message(self, raw: str) -> None:
         try:

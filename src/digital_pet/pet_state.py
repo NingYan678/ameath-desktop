@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+from .animation_catalog import ANIMATIONS
+from .config import resource_root
 from .preferences import DesktopPreferences
 from .storage import atomic_write_json
 
@@ -136,9 +139,66 @@ DRAG_INTERACTIONS: tuple[CompanionInteraction, ...] = (
 )
 
 
+_FALLBACK_PROACTIVE_EVENTS = PROACTIVE_EVENTS
+_FALLBACK_CLICK_INTERACTIONS = CLICK_INTERACTIONS
+_FALLBACK_DRAG_INTERACTIONS = DRAG_INTERACTIONS
+_ALLOWED_CATEGORIES = {"time", "care", "support", "ghost", "campus", "music", "work", "quiet"}
+_BANNED_RELATIONSHIP_WORDS = ("主人", "恋人", "男朋友", "女朋友", "老公", "老婆")
+
+
+def _valid_text(value: object, *, maximum: int = 180) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and len(value.strip()) <= maximum and not any(word in value for word in _BANNED_RELATIONSHIP_WORDS)
+
+
+def _load_catalog() -> tuple[tuple[ProactiveEvent, ...], tuple[CompanionInteraction, ...], tuple[CompanionInteraction, ...]]:
+    """Load authored content when available, retaining a safe built-in fallback."""
+    path = resource_root() / "assets" / "content" / "companion_zh-CN.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("locale") != "zh-CN":
+            raise ValueError("unsupported companion content locale")
+        proactive = tuple(_proactive_from_json(item) for item in payload["proactive_events"])
+        clicks = tuple(_interaction_from_json(item) for item in payload["click_interactions"])
+        drags = tuple(_interaction_from_json(item) for item in payload["drag_interactions"])
+        all_ids = [item.event_id for item in (*proactive, *clicks, *drags)]
+        if len(all_ids) != len(set(all_ids)) or not 0.15 <= sum(item.expects_reply for item in proactive) / len(proactive) <= 0.35:
+            raise ValueError("invalid companion content proportions")
+        return proactive, clicks, drags
+    except (OSError, ValueError, TypeError, KeyError, ZeroDivisionError, json.JSONDecodeError):
+        return _FALLBACK_PROACTIVE_EVENTS, _FALLBACK_CLICK_INTERACTIONS, _FALLBACK_DRAG_INTERACTIONS
+
+
+def _proactive_from_json(item: Any) -> ProactiveEvent:
+    if not isinstance(item, dict):
+        raise ValueError("proactive event must be an object")
+    animation = str(item["animation"])
+    event_id = item.get("event_id")
+    raw_hours = item.get("hours", [])
+    if not isinstance(raw_hours, list):
+        raise ValueError("hours must be a list")
+    hours = tuple(int(hour) for hour in raw_hours)
+    if not isinstance(event_id, str) or not event_id.strip() or not _valid_text(item["text"]) or str(item["category"]) not in _ALLOWED_CATEGORIES or animation not in ANIMATIONS or any(hour not in range(24) for hour in hours):
+        raise ValueError("invalid proactive event")
+    return ProactiveEvent(event_id.strip(), str(item["text"]).strip(), animation, str(item["category"]), bool(item.get("expects_reply", False)), hours)
+
+
+def _interaction_from_json(item: Any) -> CompanionInteraction:
+    if not isinstance(item, dict):
+        raise ValueError("interaction must be an object")
+    animation = str(item["animation"])
+    duration_ms = int(item.get("duration_ms", 1_600))
+    event_id = item.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip() or not _valid_text(item["text"]) or animation not in ANIMATIONS or not 800 <= duration_ms <= 5_000:
+        raise ValueError("invalid interaction")
+    return CompanionInteraction(event_id.strip(), str(item["text"]).strip(), animation, duration_ms)
+
+
+PROACTIVE_EVENTS, CLICK_INTERACTIONS, DRAG_INTERACTIONS = _load_catalog()
+
+
 @dataclass(frozen=True)
 class PetState:
-    schema_version: int = 2
+    schema_version: int = 3
     familiarity: int = 0
     energy: str = "calm"
     mood: str = "calm"
@@ -146,6 +206,10 @@ class PetState:
     last_proactive: str = ""
     recent_proactive_ids: tuple[str, ...] = ()
     last_proactive_category: str = ""
+    last_seen: str = ""
+    daily_interaction_date: str = ""
+    daily_interaction_count: int = 0
+    unlocked_sequence_ids: tuple[str, ...] = ()
 
 
 class PetStateStore:
@@ -158,6 +222,9 @@ class PetStateStore:
             recent = payload.get("recent_proactive_ids", [])
             if not isinstance(recent, list):
                 recent = []
+            unlocked = payload.get("unlocked_sequence_ids", [])
+            if not isinstance(unlocked, list):
+                unlocked = []
             return PetState(
                 familiarity=max(0, min(10_000, int(payload.get("familiarity", 0)))),
                 energy=str(payload.get("energy", "calm")),
@@ -166,6 +233,10 @@ class PetStateStore:
                 last_proactive=str(payload.get("last_proactive", "")),
                 recent_proactive_ids=tuple(str(item) for item in recent if isinstance(item, str))[-12:],
                 last_proactive_category=str(payload.get("last_proactive_category", "")),
+                last_seen=str(payload.get("last_seen", payload.get("last_interaction", ""))),
+                daily_interaction_date=str(payload.get("daily_interaction_date", "")),
+                daily_interaction_count=max(0, min(5, int(payload.get("daily_interaction_count", 0)))),
+                unlocked_sequence_ids=tuple(str(item) for item in unlocked if isinstance(item, str))[-64:],
             )
         except (OSError, ValueError, TypeError):
             return PetState()
@@ -193,14 +264,52 @@ class PetStateEngine:
 
     def record_interaction(self, now: datetime | None = None) -> None:
         moment = now or datetime.now()
+        today = moment.date().isoformat()
+        count = self.state.daily_interaction_count if self.state.daily_interaction_date == today else 0
+        familiarity_gain = 1 if count < 5 else 0
         self.state = replace(
             self.state,
-            familiarity=min(10_000, self.state.familiarity + 1),
+            familiarity=min(10_000, self.state.familiarity + familiarity_gain),
             last_interaction=moment.isoformat(),
+            last_seen=moment.isoformat(),
+            daily_interaction_date=today,
+            daily_interaction_count=min(5, count + 1),
             energy="engaged",
             mood="curious",
         )
         self.store.save(self.state)
+
+    def record_proactive_reply(self, event: ProactiveEvent, now: datetime | None = None) -> None:
+        """Reward an answered prompt without creating a negative absence state."""
+        moment = now or datetime.now()
+        self.record_proactive(event, moment)
+        self.state = replace(self.state, familiarity=min(10_000, self.state.familiarity + 2), last_seen=moment.isoformat(), mood="bright")
+        self.store.save(self.state)
+
+    def record_conversation(self, now: datetime | None = None) -> None:
+        moment = now or datetime.now()
+        self.state = replace(self.state, familiarity=min(10_000, self.state.familiarity + 1), last_seen=moment.isoformat(), mood="curious")
+        self.store.save(self.state)
+
+    def relationship_stage(self) -> str:
+        if self.state.familiarity >= 80:
+            return "默契"
+        if self.state.familiarity >= 20:
+            return "熟悉"
+        return "初识"
+
+    def welcome_back_needed(self, now: datetime | None = None) -> bool:
+        """Return whether the next visible greeting should acknowledge a long absence."""
+        if not self.state.last_seen:
+            return False
+        try:
+            last_seen = datetime.fromisoformat(self.state.last_seen)
+        except ValueError:
+            return False
+        current = now or datetime.now()
+        if last_seen.tzinfo is not None and current.tzinfo is None:
+            current = current.replace(tzinfo=last_seen.tzinfo)
+        return current - last_seen >= timedelta(days=3)
 
     def proactive_event(
         self,
@@ -230,6 +339,7 @@ class PetStateEngine:
             self.state,
             mood="curious",
             last_proactive=moment.isoformat(),
+            last_seen=moment.isoformat(),
             recent_proactive_ids=recent,
             last_proactive_category=event.category,
         )

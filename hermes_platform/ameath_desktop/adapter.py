@@ -18,6 +18,7 @@ from gateway.session import SessionSource
 
 PLATFORM_NAME = "ameath_desktop"
 CHAT_ID = "desktop"
+CUE_CHAT_ID = "desktop-cue"
 RUNTIME_FILENAME = "ameath_desktop_runtime.json"
 
 
@@ -30,6 +31,7 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
         self._runner: web.AppRunner | None = None
         self._token = ""
         self._port: int | None = None
+        self._pending_cue_requests: set[str] = set()
 
     @property
     def authorization_is_upstream(self) -> bool:
@@ -84,7 +86,16 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
         reply_to: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        del reply_to, metadata
+        del reply_to
+        cue_metadata = metadata.get("ameath_companion_cue") if isinstance(metadata, dict) else None
+        cue_request_id = str(cue_metadata.get("request_id", "")) if isinstance(cue_metadata, dict) else ""
+        if chat_id == CUE_CHAT_ID:
+            cue_request_id = cue_request_id or next(iter(self._pending_cue_requests), "")
+            cue = _safe_cue_payload(content, cue_request_id)
+            if cue is not None:
+                await self._broadcast({"type": "companion_cue", **cue})
+                self._pending_cue_requests.discard(cue_request_id)
+            return SendResult(success=cue is not None, error=None if cue is not None else "Invalid CompanionCue")
         if chat_id != CHAT_ID:
             return SendResult(success=False, error="Unknown Ameath desktop chat")
         await self._broadcast({"type": "message", "content": content, "final": True})
@@ -98,6 +109,8 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         del metadata
+        if chat_id == CUE_CHAT_ID:
+            return SendResult(success=True)
         if chat_id != CHAT_ID:
             return SendResult(success=False, error="Unknown Ameath desktop chat")
         await self._broadcast({"type": "draft", "draft_id": draft_id, "content": content})
@@ -204,14 +217,42 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
         if event_type == "user_message":
             text = payload.get("text")
             if isinstance(text, str) and text.strip() and len(text) <= 32_000:
+                context = payload.get("context")
+                metadata = {"ameath_desktop": True}
+                if isinstance(context, dict) and context.get("kind") == "proactive_reply":
+                    prompt = context.get("prompt")
+                    event_id = context.get("event_id")
+                    if isinstance(prompt, str) and isinstance(event_id, str) and len(prompt) <= 180 and len(event_id) <= 80:
+                        text = f"[爱弥斯刚才问：{prompt.strip()}]\n用户回答：{text.strip()}"
+                        metadata["proactive_reply"] = {"event_id": event_id, "prompt": prompt.strip()}
                 event = MessageEvent(
                     text=text.strip(),
                     message_type=MessageType.TEXT,
                     source=self._source(),
                     message_id=uuid.uuid4().hex,
-                    metadata={"ameath_desktop": True},
+                    metadata=metadata,
                 )
                 await self.handle_message(event)
+        elif event_type == "companion_cue_request":
+            request_id = payload.get("request_id")
+            categories = payload.get("categories")
+            if isinstance(request_id, str) and 1 <= len(request_id) <= 80 and isinstance(categories, list):
+                allowed = [item for item in categories if isinstance(item, str) and item in {"interest", "goal", "topic"}]
+                if allowed:
+                    self._pending_cue_requests.add(request_id)
+                    event = MessageEvent(
+                        text=(
+                            "Return exactly one JSON object with keys request_id, text, category, expires_at. "
+                            "Use only a short, non-sensitive hint about an interest, goal, or recent topic. "
+                            "Do not reveal or quote raw memory, credentials, files, paths, or relationship claims. "
+                            f"request_id={request_id}; allowed categories={','.join(allowed)}; do not store this request."
+                        ),
+                        message_type=MessageType.TEXT,
+                        source=self._source(CUE_CHAT_ID),
+                        message_id=uuid.uuid4().hex,
+                        metadata={"ameath_desktop": True, "ameath_companion_cue_request": request_id},
+                    )
+                    await self.handle_message(event)
         elif event_type == "approval":
             session_key, choice = payload.get("session_key"), payload.get("choice")
             if isinstance(session_key, str) and isinstance(choice, str) and choice in {"approve", "deny", "always", "session"}:
@@ -232,10 +273,10 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
                 if inspect.isawaitable(result):
                     await result
 
-    def _source(self) -> SessionSource:
+    def _source(self, chat_id: str = CHAT_ID) -> SessionSource:
         return SessionSource(
             platform=self.platform,
-            chat_id=CHAT_ID,
+            chat_id=chat_id,
             chat_name="Ameath Desktop",
             chat_type="dm",
             user_id="local-desktop-owner",
@@ -273,6 +314,27 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
             temporary.replace(path)
         except OSError:
             pass
+
+
+def _safe_cue_payload(content: str, request_id: str) -> dict[str, str] | None:
+    """Extract only the strict cue object; malformed model output is discarded."""
+    try:
+        payload = json.loads(content.strip())
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or payload.get("request_id") != request_id:
+        return None
+    text = payload.get("text")
+    category = payload.get("category")
+    expires_at = payload.get("expires_at")
+    if not isinstance(text, str) or not isinstance(category, str) or not isinstance(expires_at, str):
+        return None
+    if not 1 <= len(text.strip()) <= 120 or category not in {"interest", "goal", "topic"}:
+        return None
+    lowered = text.lower()
+    if any(term in lowered for term in ("token", "password", "secret", "api key", "bearer", "c:\\", "主人", "恋人")):
+        return None
+    return {"request_id": request_id, "text": text.strip(), "category": category, "expires_at": expires_at}
 
 
 def check_requirements() -> bool:
