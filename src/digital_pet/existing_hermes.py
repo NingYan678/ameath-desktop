@@ -224,6 +224,9 @@ class ExistingHermesRuntimeService:
         health = self.quick_health()
         return PreparationResult(health is RuntimeHealth.READY, health is RuntimeHealth.READY, changed, False)
 
+    def stop_gateway(self) -> bool:
+        return stop_verified_runtime(self.settings.desktop_runtime_path, self.installation.source)
+
     def start_gateway(self) -> bool:
         health = self.quick_health()
         if health in {RuntimeHealth.READY, RuntimeHealth.VERIFYING}:

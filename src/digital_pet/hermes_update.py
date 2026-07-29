@@ -192,7 +192,7 @@ class HermesUpdateService:
         if not info.update_available:
             return HermesUpdateResult(info.current_revision, info.current_revision, False, log_path)
         if self.shared:
-            return self._apply_shared(info, log_path)
+            return self._apply_shared(info, log_path, runtime)
         return self._apply_isolated(info, log_path, runtime)
 
     def shared_preflight(self) -> tuple[str, str]:
@@ -210,9 +210,10 @@ class HermesUpdateService:
         self._validate_shared_python()
         return self._git("branch", "--show-current").strip(), origin
 
-    def _apply_shared(self, info: HermesUpdateInfo, log_path: Path) -> HermesUpdateResult:
+    def _apply_shared(self, info: HermesUpdateInfo, log_path: Path, runtime: UpdateRuntime | object) -> HermesUpdateResult:
         branch, _ = self.shared_preflight()
         original_revision = info.current_revision
+        gateway_was_running = self._stop_shared_gateway(runtime)
         environment = os.environ.copy()
         environment["HERMES_HOME"] = str(self.settings.hermes_home)
         command = [
@@ -238,17 +239,48 @@ class HermesUpdateService:
             )
         except Exception:
             self._restore_shared_revision(branch, original_revision, log_path)
+            self._restart_shared_gateway(runtime, gateway_was_running)
             raise
         self._write_log(log_path, command, result.stdout, result.stderr)
         if result.returncode:
             self._restore_shared_revision(branch, original_revision, log_path)
+            self._restart_shared_gateway(runtime, gateway_was_running)
             raise RuntimeError(f"Hermes 更新失败（退出码 {result.returncode}）。详情见：{log_path}")
         self._report_progress(HermesUpdateStatus.VERIFYING)
         current = self.current_revision()
         if current != info.target_revision:
             self._restore_shared_revision(branch, original_revision, log_path)
+            self._restart_shared_gateway(runtime, gateway_was_running)
             raise RuntimeError(f"Hermes 更新结束，但版本验证失败。更新前分支：{branch or '(detached)'}；详情见：{log_path}")
+        self._restart_shared_gateway(runtime, gateway_was_running)
         return HermesUpdateResult(info.current_revision, current, True, log_path)
+
+    @staticmethod
+    def _stop_shared_gateway(runtime: object) -> bool:
+        """Stop only a verified shared Gateway before replacing its executable."""
+        health_reader = getattr(runtime, "quick_health", None)
+        health = health_reader() if callable(health_reader) else None
+        if health is RuntimeHealth.STOPPED:
+            return False
+        if health is RuntimeHealth.UNTRUSTED:
+            raise RuntimeError("The shared Hermes Gateway identity is untrusted; update was cancelled.")
+        stopper = getattr(runtime, "stop_gateway", None)
+        if not callable(stopper):
+            return False
+        if not stopper():
+            health = health_reader() if callable(health_reader) else None
+            if health is RuntimeHealth.STOPPED:
+                return False
+            raise RuntimeError("The shared Hermes Gateway could not be stopped safely.")
+        return True
+
+    @staticmethod
+    def _restart_shared_gateway(runtime: object, was_running: bool) -> None:
+        if not was_running:
+            return
+        starter = getattr(runtime, "start_gateway", None)
+        if not callable(starter) or not starter():
+            raise RuntimeError("The shared Hermes Gateway could not be restarted after the update.")
 
     def _validate_shared_python(self) -> None:
         """Reject known-broken venvs before the upstream updater can mutate Git."""

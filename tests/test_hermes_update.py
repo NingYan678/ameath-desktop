@@ -91,6 +91,38 @@ def test_shared_update_uses_official_command_without_force_flags(tmp_path):
     assert result.current_revision == NEW
 
 
+def test_shared_update_stops_and_restarts_a_running_gateway(tmp_path):
+    settings = make_settings(tmp_path)
+    runner = CommandRunner()
+
+    class SharedRuntime:
+        def __init__(self):
+            self.health = RuntimeHealth.READY
+            self.stop_calls = 0
+            self.start_calls = 0
+
+        def quick_health(self):
+            return self.health
+
+        def stop_gateway(self):
+            self.stop_calls += 1
+            self.health = RuntimeHealth.STOPPED
+            return True
+
+        def start_gateway(self):
+            self.start_calls += 1
+            self.health = RuntimeHealth.READY
+            return True
+
+    runtime = SharedRuntime()
+    service = HermesUpdateService(settings, shared=True, run_command=runner)
+
+    service.apply(runtime)
+
+    assert runtime.stop_calls == 1
+    assert runtime.start_calls == 1
+
+
 def test_shared_update_refuses_a_dirty_worktree(tmp_path):
     settings = make_settings(tmp_path)
     runner = CommandRunner(dirty=True)

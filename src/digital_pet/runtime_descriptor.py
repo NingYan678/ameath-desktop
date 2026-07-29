@@ -130,8 +130,41 @@ def stop_verified_runtime(path: Path, source: Path) -> bool:
     descriptor = read_verified_runtime(path, source)
     if descriptor is None:
         return False
+    expected_source = str(source.resolve()).replace("'", "''").lower()
+    script = f"""
+$expected = '{expected_source}'
+$root = Get-CimInstance Win32_Process -Filter 'ProcessId = {descriptor.pid}'
+if ($null -eq $root) {{ exit 1 }}
+$targets = New-Object 'System.Collections.Generic.HashSet[int]'
+$queue = New-Object 'System.Collections.Generic.Queue[int]'
+[void]$targets.Add([int]{descriptor.pid})
+[void]$queue.Enqueue([int]{descriptor.pid})
+$current = $root
+for ($step = 0; $step -lt 4 -and $null -ne $current; $step++) {{
+  $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$current.ParentProcessId)"
+  if ($null -eq $parent) {{ break }}
+  $line = [string]$parent.CommandLine
+  $ownsSource = $line.ToLowerInvariant().Contains($expected)
+  $gateway = ($line -match 'hermes(?:_cli)?') -and ($line -match 'gateway([ ]|$)')
+  if (-not $ownsSource -or -not $gateway) {{ break }}
+  if ($targets.Add([int]$parent.ProcessId)) {{ [void]$queue.Enqueue([int]$parent.ProcessId) }}
+  $current = $parent
+}}
+while ($queue.Count -gt 0) {{
+  $parentId = $queue.Dequeue()
+  foreach ($child in @(Get-CimInstance Win32_Process | Where-Object {{ [int]$_.ParentProcessId -eq $parentId }})) {{
+    $line = [string]$child.CommandLine
+    if ($line.ToLowerInvariant().Contains($expected) -and $targets.Add([int]$child.ProcessId)) {{
+      [void]$queue.Enqueue([int]$child.ProcessId)
+    }}
+  }}
+}}
+$targets | Sort-Object -Descending | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}
+    """
     result = subprocess.run(
-        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", f"Stop-Process -Id {descriptor.pid} -Force"],
+        # The descriptor points at the uv Python leaf; also stop its verified
+        # Hermes wrapper and source-owned children so updates can replace the exe.
+        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         check=False,
     )

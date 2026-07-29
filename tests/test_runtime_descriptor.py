@@ -79,7 +79,7 @@ def test_quick_health_never_spawns_a_subprocess(monkeypatch, tmp_path):
     assert fingerprint is not None
 
 
-def test_stop_targets_only_the_verified_descriptor_pid(monkeypatch, tmp_path):
+def test_stop_targets_verified_gateway_process_tree(monkeypatch, tmp_path):
     path = tmp_path / "runtime.json"
     write_descriptor(path, pid=987)
     monkeypatch.setattr("digital_pet.runtime_descriptor.pid_is_alive", lambda pid: True)
@@ -91,4 +91,7 @@ def test_stop_targets_only_the_verified_descriptor_pid(monkeypatch, tmp_path):
     )
 
     assert stop_verified_runtime(path, tmp_path / "hermes")
-    assert calls == [["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Stop-Process -Id 987 -Force"]]
+    command = calls[0]
+    assert command[:5] == ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+    assert "ProcessId = 987" in command[-1]
+    assert "Stop-Process -Id $_" in command[-1]
