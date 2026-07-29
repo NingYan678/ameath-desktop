@@ -16,7 +16,9 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
-      - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
       - name: Install development tools
         run: uv pip install --system -r requirements-dev.txt
       - name: Run quality gates
