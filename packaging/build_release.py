@@ -99,7 +99,7 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     python_root = runtime / "python"
     python_environment = os.environ.copy()
     python_environment["UV_PYTHON_INSTALL_DIR"] = str(python_root)
-    run("uv", "python", "install", "--install-dir", str(python_root), "--no-registry", python_version, env=python_environment)
+    run("uv", "python", "install", "--install-dir", str(python_root), "--no-bin", "--no-registry", python_version, env=python_environment)
     interpreters = tuple(python_root.glob("*/python.exe"))
     if not interpreters:
         raise RuntimeError("uv did not create a portable Python interpreter in the release staging directory")
@@ -174,10 +174,16 @@ def main() -> int:
         raise RuntimeError("--hermes-source must point to a Hermes source checkout.")
     try:
         commit = subprocess.check_output(["git", "-C", str(args.hermes_source), "rev-parse", "HEAD"], text=True).strip()
+        dirty = subprocess.check_output(
+            ["git", "-C", str(args.hermes_source), "status", "--porcelain", "--untracked-files=all"],
+            text=True,
+        ).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError("--hermes-source must be a Git checkout pinned to the required Hermes commit.") from exc
     if commit != HERMES_COMMIT:
         raise RuntimeError(f"--hermes-source is {commit}, expected pinned Hermes commit {HERMES_COMMIT}.")
+    if dirty:
+        raise RuntimeError("--hermes-source must have a clean working tree for a reproducible build.")
     build_root = ROOT / "build" / "installer" if args.keep_build else Path(tempfile.mkdtemp(prefix="ameath-release-"))
     if args.keep_build:
         remove_tree(build_root)

@@ -141,6 +141,7 @@ class SettingsDialog(QDialog):
         actions.addStretch(1)
         cancel = QPushButton("取消", self)
         cancel.clicked.connect(self.reject)
+        self._cancel_button = cancel
         save_desktop = QPushButton("保存桌宠设置", self)
         save_desktop.clicked.connect(self._save_desktop)
         self.apply_button = QPushButton("应用 Hermes 并重启", self)
@@ -387,15 +388,18 @@ class SettingsDialog(QDialog):
             return
         self.apply_button.setEnabled(False)
         self.apply_button.setText("正在应用…")
+        self._cancel_button.setEnabled(False)
+        model = self.model.text()
+        provider = self.provider.text()
+        personality = self.personality.currentText()
+        tools = self._selected_tools()
         task = start_task(lambda: self._hermes.apply_and_restart(
-                model=self.model.text(),
-                provider=self.provider.text(),
-                personality=self.personality.currentText(),
-                tools=self._selected_tools(),
-            ))
+            model=model,
+            provider=provider,
+            personality=personality,
+            tools=tools,
+        ), succeeded=lambda _: self._hermes_applied(preferences), failed=self._hermes_failed)
         self._hermes_task = task
-        task.signals.succeeded.connect(lambda _: self._hermes_applied(preferences))
-        task.signals.failed.connect(self._hermes_failed)
 
     def _reconfigure_backend(self) -> None:
         # End this modal loop first.  Showing an application-level message
@@ -405,16 +409,17 @@ class SettingsDialog(QDialog):
             QTimer.singleShot(0, self._backend_reconfigure)
 
     def reject(self) -> None:
+        if self._hermes_task is not None:
+            return
         self._preview(self._initial)
         super().reject()
 
     def _load_hermes_async(self) -> None:
         if self._hermes is None or self._hermes_task is not None:
             return
-        task = start_task(self._hermes.read)
+        task = start_task(self._hermes.read, succeeded=self._hermes_loaded, failed=self._hermes_load_failed)
+        self._cancel_button.setEnabled(False)
         self._hermes_task = task
-        task.signals.succeeded.connect(self._hermes_loaded)
-        task.signals.failed.connect(self._hermes_load_failed)
 
     def _hermes_loaded(self, snapshot: object) -> None:
         self._snapshot = snapshot  # type: ignore[assignment]
@@ -429,11 +434,13 @@ class SettingsDialog(QDialog):
         self._hermes_card.setEnabled(True)
         self._hermes_task = None
         self.apply_button.setEnabled(True)
+        self._cancel_button.setEnabled(True)
 
     def _hermes_load_failed(self, message: str) -> None:
         self._hermes_task = None
         self._hermes_card.setEnabled(False)
         self.apply_button.setText("Hermes 暂不可用")
+        self._cancel_button.setEnabled(True)
         QMessageBox.warning(self, "无法读取 Hermes 设置", message)
 
     def _hermes_applied(self, preferences: DesktopPreferences) -> None:
@@ -446,4 +453,5 @@ class SettingsDialog(QDialog):
         self._hermes_task = None
         self.apply_button.setText("应用 Hermes 并重启")
         self.apply_button.setEnabled(True)
+        self._cancel_button.setEnabled(True)
         QMessageBox.warning(self, "Hermes 设置未完全应用", f"桌宠设置已保存。\n\n{message}")

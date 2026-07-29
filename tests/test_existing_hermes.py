@@ -135,6 +135,28 @@ def test_failed_plugin_update_restores_an_existing_plugin(monkeypatch, tmp_path)
     assert (existing / "adapter.py").read_text(encoding="utf-8") == "old"
 
 
+def test_shared_plugin_update_removes_files_retired_from_the_source(monkeypatch, tmp_path):
+    settings = make_settings(tmp_path)
+    plugin = settings.install_root / "hermes_platform" / "ameath_desktop"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (plugin / "adapter.py").write_text("new", encoding="utf-8")
+    installation = make_installation(tmp_path, desktop_enabled=True)
+    existing = installation.home / "plugins" / "platforms" / "ameath_desktop"
+    existing.mkdir(parents=True)
+    (existing / "plugin.yaml").write_text("name: ameath-desktop\n", encoding="utf-8")
+    (existing / "adapter.py").write_text("old", encoding="utf-8")
+    (existing / "retired.py").write_text("old code", encoding="utf-8")
+    runtime = ExistingHermesRuntimeService(settings, installation)
+    monkeypatch.setattr("digital_pet.existing_hermes._compatible", lambda *_: True)
+    monkeypatch.setattr(runtime, "quick_health", lambda: RuntimeHealth.STOPPED)
+
+    runtime.prepare()
+
+    assert (existing / "adapter.py").read_text(encoding="utf-8") == "new"
+    assert not (existing / "retired.py").exists()
+
+
 def test_probe_reports_invalid_yaml_without_trying_to_modify_hermes(monkeypatch, tmp_path):
     installation = make_installation(tmp_path)
     monkeypatch.setattr("digital_pet.existing_hermes._inspect_config", lambda *_: None)

@@ -261,22 +261,27 @@ class AmeathRuntimeService:
         staged = target.parent / f".{target.name}.{uuid.uuid4().hex}.new"
         backup = target.parent / f".{target.name}.{uuid.uuid4().hex}.backup"
         replaced = False
+        committed = False
         try:
             shutil.copytree(source, staged)
             if target.exists():
                 target.replace(backup)
                 replaced = True
             staged.replace(target)
+            committed = True
         except Exception:
-            if target.exists() and replaced:
-                shutil.rmtree(target, ignore_errors=True)
-            if replaced and backup.exists():
-                backup.replace(target)
+            try:
+                if target.exists() and replaced:
+                    shutil.rmtree(target)
+                if replaced and backup.exists():
+                    backup.replace(target)
+            except OSError:
+                LOGGER.exception("Ameath plugin rollback failed; backup retained at %s", backup)
             raise
         finally:
             if staged.exists():
                 shutil.rmtree(staged, ignore_errors=True)
-            if backup.exists():
+            if committed and backup.exists():
                 shutil.rmtree(backup, ignore_errors=True)
 
 

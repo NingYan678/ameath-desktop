@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, Signal
 
 
 LOGGER = logging.getLogger("digital_pet.runtime")
@@ -21,8 +21,9 @@ class TaskSignals(QObject):
 class FunctionTask(QRunnable):
     def __init__(self, operation: Callable[[], Any]) -> None:
         super().__init__()
+        self.setAutoDelete(False)
         self.operation = operation
-        self.signals = TaskSignals()
+        self.signals = TaskSignals(QCoreApplication.instance())
 
     def run(self) -> None:
         try:
@@ -36,7 +37,19 @@ class FunctionTask(QRunnable):
             self.signals.finished.emit()
 
 
-def start_task(operation: Callable[[], Any]) -> FunctionTask:
+def start_task(
+    operation: Callable[[], Any],
+    *,
+    succeeded: Callable[[Any], None] | None = None,
+    failed: Callable[[str], None] | None = None,
+    finished: Callable[[], None] | None = None,
+) -> FunctionTask:
     task = FunctionTask(operation)
+    if succeeded is not None:
+        task.signals.succeeded.connect(succeeded)
+    if failed is not None:
+        task.signals.failed.connect(failed)
+    if finished is not None:
+        task.signals.finished.connect(finished)
     QThreadPool.globalInstance().start(task)
     return task

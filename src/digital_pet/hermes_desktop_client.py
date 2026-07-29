@@ -93,10 +93,12 @@ class HermesDesktopClient(QObject):
         self.connected.emit()
 
     def _on_disconnected(self) -> None:
+        self._endpoint = ""
         self.disconnected.emit("Hermes Gateway 暂未连接，正在等待它恢复。")
 
     def _on_error(self, _error: object) -> None:
         if not self._socket.isValid():
+            self._endpoint = ""
             self.disconnected.emit("正在连接 Hermes Gateway…")
 
     def _on_message(self, raw: str) -> None:

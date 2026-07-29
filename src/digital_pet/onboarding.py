@@ -87,6 +87,7 @@ class OnboardingDialog(QDialog):
         actions.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel, self)
         buttons.rejected.connect(self.reject)
+        self._cancel_button = buttons.button(QDialogButtonBox.Cancel)
         self.finish_button = QPushButton("完成并启动", self)
         self.finish_button.setObjectName("primary")
         self.finish_button.clicked.connect(self._finish)
@@ -160,13 +161,11 @@ class OnboardingDialog(QDialog):
             return
         self.test_button.setEnabled(False)
         self.finish_button.setEnabled(False)
+        self._cancel_button.setEnabled(False)
         self.status.setText("正在处理，请稍候…")
         self.status.setStyleSheet("color: #d9cce8;")
-        task = start_task(operation)
+        task = start_task(operation, succeeded=on_success, failed=self._task_failed, finished=self._task_finished)
         self._task = task
-        task.signals.succeeded.connect(on_success)
-        task.signals.failed.connect(self._task_failed)
-        task.signals.finished.connect(self._task_finished)
 
     def _show_connection_result(self, result: object) -> None:
         valid, message = result  # type: ignore[misc]
@@ -181,6 +180,11 @@ class OnboardingDialog(QDialog):
         else:
             QMessageBox.warning(self, "暂时无法完成设置", message)
 
+    def reject(self) -> None:
+        if self._task is not None:
+            return
+        super().reject()
+
     def _task_failed(self, message: str) -> None:
         QMessageBox.critical(self, "启动失败", message)
 
@@ -188,3 +192,4 @@ class OnboardingDialog(QDialog):
         self._task = None
         self.test_button.setEnabled(True)
         self.finish_button.setEnabled(True)
+        self._cancel_button.setEnabled(True)

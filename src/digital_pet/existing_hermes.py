@@ -8,7 +8,6 @@ import os
 import shutil
 import subprocess
 import uuid
-from filecmp import cmp
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -197,16 +196,27 @@ class ExistingHermesRuntimeService:
         try:
             transaction.begin()
             source = _plugin_source(self.app_settings)
-            source_adapter, target_adapter = source / "adapter.py", target / "adapter.py"
-            if not target.is_dir() or not target_adapter.is_file() or not cmp(source_adapter, target_adapter, shallow=False):
-                shutil.copytree(source, target, dirs_exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            staged = target.with_name(f".{target.name}.{uuid.uuid4().hex}.new")
+            if not _same_tree(source, target):
+                try:
+                    shutil.copytree(source, staged)
+                    if target.exists():
+                        shutil.rmtree(target)
+                    staged.replace(target)
+                finally:
+                    if staged.exists():
+                        shutil.rmtree(staged, ignore_errors=True)
                 transaction.plugin_changed = True
                 changed = True
             if not self.installation.desktop_enabled:
                 self._enable_desktop_plugin()
                 changed = True
         except Exception:
-            transaction.rollback()
+            try:
+                transaction.rollback()
+            except OSError:
+                LOGGER.exception("Shared Hermes plugin rollback failed; transaction backup was retained")
             LOGGER.exception("Rolled back failed local Hermes desktop-plugin activation")
             raise
         else:
@@ -303,17 +313,15 @@ class _ActivationTransaction:
             shutil.copytree(self.plugin_target, self.plugin_backup)
 
     def rollback(self) -> None:
-        try:
-            if self.backup.is_file():
-                shutil.copy2(self.backup, self.config)
-            if self.plugin_changed and self.plugin_target.is_dir():
-                shutil.rmtree(self.plugin_target)
-            if self.plugin_changed and self.plugin_existed and self.plugin_backup.is_dir():
-                shutil.copytree(self.plugin_backup, self.plugin_target)
-        finally:
-            self.backup.unlink(missing_ok=True)
-            if self.plugin_backup.is_dir():
-                shutil.rmtree(self.plugin_backup)
+        if self.backup.is_file():
+            shutil.copy2(self.backup, self.config)
+        if self.plugin_changed and self.plugin_target.is_dir():
+            shutil.rmtree(self.plugin_target)
+        if self.plugin_changed and self.plugin_existed and self.plugin_backup.is_dir():
+            shutil.copytree(self.plugin_backup, self.plugin_target)
+        self.backup.unlink(missing_ok=True)
+        if self.plugin_backup.is_dir():
+            shutil.rmtree(self.plugin_backup)
 
     def commit(self) -> None:
         permanent = self.config.with_name("config.yaml.ameath-backup")
@@ -327,3 +335,13 @@ class _ActivationTransaction:
 def _plugin_source(settings: Settings) -> Path:
     source_root = settings.resources_root if is_packaged() else settings.install_root
     return source_root / "hermes_platform" / "ameath_desktop"
+
+
+def _same_tree(left: Path, right: Path) -> bool:
+    if not right.is_dir():
+        return False
+    left_files = {path.relative_to(left) for path in left.rglob("*") if path.is_file()}
+    right_files = {path.relative_to(right) for path in right.rglob("*") if path.is_file()}
+    if left_files != right_files:
+        return False
+    return all(left.joinpath(relative).read_bytes() == right.joinpath(relative).read_bytes() for relative in left_files)

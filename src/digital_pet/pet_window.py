@@ -324,7 +324,7 @@ class PetWindow(QWidget):
         blocked = self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
         if blocked:
             LOGGER.info("Ameath proactive interaction deferred: transient UI activity")
-            self._proactive_timer.start(5_000)
+            self._schedule_proactive()
             return
         event = self._pet_state.proactive_event(fullscreen=fullscreen, busy=self.conversation.is_expanded)
         if event is None:
@@ -336,7 +336,7 @@ class PetWindow(QWidget):
             LOGGER.info("Ameath proactive interaction displayed: %s", event.event_id)
         else:
             LOGGER.info("Ameath proactive interaction deferred by bubble priority: %s", event.event_id)
-            self._proactive_timer.start(5_000)
+            self._schedule_proactive()
             return
         self._schedule_proactive()
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .runtime_descriptor import RuntimeHealth
 
@@ -26,8 +26,9 @@ class _VerificationSignals(QObject):
 class _VerificationTask(QRunnable):
     def __init__(self, runtime: RuntimeBackend) -> None:
         super().__init__()
+        self.setAutoDelete(False)
         self.runtime = runtime
-        self.signals = _VerificationSignals()
+        self.signals = _VerificationSignals(QCoreApplication.instance())
 
     def run(self) -> None:
         try:
