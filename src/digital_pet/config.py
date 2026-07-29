@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,17 +41,62 @@ def _development_hermes_home() -> Path:
 DEFAULT_HERMES_HOME = default_data_root() / "hermes" if is_packaged() else _development_hermes_home()
 
 
+def packaged_runtime_python(runtime_root: Path) -> Path:
+    """Resolve the staged interpreter without relying on the build machine layout."""
+    metadata = runtime_root / "runtime_metadata.json"
+    try:
+        relative = str(json.loads(metadata.read_text(encoding="utf-8"))["python_relative_path"])
+        candidate = (runtime_root / relative).resolve()
+        if candidate.is_relative_to(runtime_root.resolve()) and candidate.is_file():
+            return candidate
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return runtime_root / "python" / "python.exe"
+
+
+def active_runtime_root(install_root: Path, data_root: Path) -> Path:
+    """Return a verified user runtime slot, otherwise the bundled baseline."""
+    bundled = install_root / "runtime"
+    pointer = data_root / "runtime_current.json"
+    slots = (data_root / "runtimes").resolve()
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        revision = str(payload["hermes_commit"]).strip().lower()
+        if len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision):
+            return bundled
+        candidate = (slots / revision).resolve()
+        metadata = json.loads((candidate / "runtime_metadata.json").read_text(encoding="utf-8"))
+        if (
+            candidate.is_relative_to(slots)
+            and str(metadata.get("hermes_commit", "")).lower() == revision
+            and (candidate / "hermes-agent" / "hermes_cli" / "main.py").is_file()
+            and packaged_runtime_python(candidate).is_file()
+        ):
+            return candidate
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return bundled
+
+
+def settings_for_runtime(settings: Settings, runtime_root: Path) -> Settings:
+    """Return isolated settings pointing at one immutable runtime slot."""
+    return Settings(
+        asset_root=settings.asset_root,
+        data_root=settings.data_root,
+        hermes_cli_python=packaged_runtime_python(runtime_root),
+        hermes_cli_launcher=runtime_root / "hermes-agent" / "hermes_cli" / "main.py",
+        hermes_home=settings.hermes_home,
+        install_root=settings.install_root,
+        hermes_runtime_root=runtime_root,
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     asset_root: Path
     data_root: Path
-    hermes_base_url: str
-    hermes_api_key: str
-    hermes_model: str
-    hermes_timeout_seconds: float
     hermes_cli_python: Path
     hermes_cli_launcher: Path
-    hermes_bridge_startup_seconds: float = 25.0
     hermes_home: Path = DEFAULT_HERMES_HOME
     install_root: Path = PROJECT_ROOT
     hermes_runtime_root: Path = Path()
@@ -74,24 +119,11 @@ class Settings:
     def launch_command(self) -> str:
         if is_packaged():
             return f'"{Path(sys.executable).resolve()}"'
-        return f'cmd.exe /c "{PROJECT_ROOT / "run.bat"}"'
+        return f'wscript.exe //B "{PROJECT_ROOT / "run.vbs"}"'
 
     @property
     def resources_root(self) -> Path:
         return resource_root()
-
-    @property
-    def hermes_backend(self) -> str:
-        if self.hermes_base_url and self.hermes_model:
-            return "http"
-        if self.hermes_cli_python.is_file() and self.hermes_cli_launcher.is_file():
-            return "cli"
-        return "none"
-
-    @property
-    def hermes_enabled(self) -> bool:
-        return self.hermes_backend != "none"
-
 
 def load_settings() -> Settings:
     # .env remains a development convenience. Installed copies use the setup
@@ -100,37 +132,25 @@ def load_settings() -> Settings:
         load_dotenv(PROJECT_ROOT / ".env")
     install_root = application_root()
     data_root = default_data_root() if is_packaged() else Path(os.getenv("AMEATH_DATA_HOME", str(PROJECT_ROOT / "data")))
-    runtime_root = Path(os.getenv("AMEATH_RUNTIME_ROOT", str(install_root / "runtime")))
+    default_runtime = active_runtime_root(install_root, data_root) if is_packaged() else install_root / "runtime"
+    runtime_root = Path(os.getenv("AMEATH_RUNTIME_ROOT", str(default_runtime)))
     if is_packaged():
         default_home = data_root / "hermes"
-        default_python = runtime_root / "python" / "python.exe"
+        default_python = packaged_runtime_python(runtime_root)
         default_launcher = runtime_root / "hermes-agent" / "hermes_cli" / "main.py"
     else:
         default_home = _development_hermes_home()
         default_python = default_home / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe"
         default_launcher = default_home / "hermes-agent" / "hermes_cli" / "main.py"
-    try:
-        timeout = max(1.0, float(os.getenv("HERMES_TIMEOUT_SECONDS", "60")))
-    except ValueError:
-        timeout = 60.0
-    try:
-        bridge_startup_seconds = max(3.0, float(os.getenv("HERMES_BRIDGE_STARTUP_SECONDS", "25")))
-    except ValueError:
-        bridge_startup_seconds = 25.0
     return Settings(
         asset_root=Path(os.getenv("AMEATH_ASSET_ROOT", str(resource_root() / "assets" / "recovered"))),
         data_root=data_root,
-        hermes_base_url=os.getenv("HERMES_BASE_URL", "").strip().rstrip("/"),
-        hermes_api_key=os.getenv("HERMES_API_KEY", "").strip(),
-        hermes_model=os.getenv("HERMES_MODEL", "").strip(),
-        hermes_timeout_seconds=timeout,
         # A packaged app must never inherit the developer's HERMES_* paths.
         # Those variables often point at an existing personal Gateway and would
         # silently merge the two assistants. Advanced package testing may use
         # the explicitly namespaced AMEATH_* overrides instead.
         hermes_cli_python=Path(os.getenv("AMEATH_HERMES_PYTHON", str(default_python))) if is_packaged() else Path(os.getenv("HERMES_CLI_PYTHON", str(default_python))),
         hermes_cli_launcher=Path(os.getenv("AMEATH_HERMES_LAUNCHER", str(default_launcher))) if is_packaged() else Path(os.getenv("HERMES_CLI_LAUNCHER", str(default_launcher))),
-        hermes_bridge_startup_seconds=bridge_startup_seconds,
         hermes_home=Path(os.getenv("AMEATH_HERMES_HOME", str(default_home))) if is_packaged() else Path(os.getenv("HERMES_HOME", str(default_home))),
         install_root=install_root,
         hermes_runtime_root=runtime_root,

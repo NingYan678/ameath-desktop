@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import os
@@ -13,11 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
-
 
 PLATFORM_NAME = "ameath_desktop"
 CHAT_ID = "desktop"
@@ -266,7 +263,7 @@ class AmeathDesktopAdapter(BasePlatformAdapter):
     def _write_runtime(self, state: str) -> None:
         if self._port is None:
             return
-        payload = {"state": state, "port": self._port, "token": self._token}
+        payload = {"state": state, "port": self._port, "token": self._token, "pid": os.getpid()}
         path = self._runtime_path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

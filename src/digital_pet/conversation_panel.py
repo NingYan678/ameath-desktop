@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QKeyEvent, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -13,12 +13,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from .markdown_renderer import is_safe_link, markdown_to_plain, render_markdown
 from .preferences import DesktopPreferences
 
 
@@ -81,6 +82,51 @@ class AmeathAvatar(QWidget):
         painter.end()
 
 
+class IconButton(QPushButton):
+    """A compact, font-independent action button with an accessible text name."""
+
+    def __init__(self, icon: str, label: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._icon = icon
+        self.setText("")
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#56365c") if self.objectName() == "sendButton" else QColor("#fff9fd")
+        pen = QPen(color, 1.8)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        box = self.rect().adjusted(8, 8, -8, -8)
+        left, top, right, bottom = box.left(), box.top(), box.right(), box.bottom()
+        middle_x, middle_y = box.center().x(), box.center().y()
+        if self._icon == "expand":
+            painter.drawLine(left, top + 2, middle_x, bottom - 2)
+            painter.drawLine(middle_x, bottom - 2, right, top + 2)
+        elif self._icon == "collapse":
+            painter.drawLine(left, bottom - 2, middle_x, top + 2)
+            painter.drawLine(middle_x, top + 2, right, bottom - 2)
+        elif self._icon == "settings":
+            painter.drawEllipse(box.adjusted(3, 3, -3, -3))
+            painter.drawLine(middle_x, top, middle_x, top + 3)
+            painter.drawLine(middle_x, bottom - 3, middle_x, bottom)
+            painter.drawLine(left, middle_y, left + 3, middle_y)
+            painter.drawLine(right - 3, middle_y, right, middle_y)
+        elif self._icon == "send":
+            painter.drawLine(left, middle_y, right, top)
+            painter.drawLine(right, top, right - 4, bottom)
+            painter.drawLine(right - 4, bottom, left, middle_y)
+            painter.drawLine(left + 2, middle_y, middle_x + 1, middle_y + 1)
+            painter.drawLine(middle_x + 1, middle_y + 1, right - 3, top + 2)
+        painter.end()
+
+
 class ConversationPanel(QWidget):
     """One-pair compact bubble and a ten-message continuous conversation panel."""
 
@@ -103,6 +149,11 @@ class ConversationPanel(QWidget):
         self._messages: list[ConversationMessage] = []
         self._expanded = False
         self._streaming = False
+        self._draft_browser: QTextBrowser | None = None
+        self._draft_render_timer = QTimer(self)
+        self._draft_render_timer.setSingleShot(True)
+        self._draft_render_timer.setInterval(80)
+        self._draft_render_timer.timeout.connect(self._flush_draft_render)
         self._status_text = "正在连接 Hermes Gateway…"
         self._compact_width = self.COMPACT_WIDTH
         self._expanded_width = self.EXPANDED_WIDTH
@@ -222,23 +273,27 @@ class ConversationPanel(QWidget):
             self._messages[-1].content = content
         else:
             self._append("assistant", content, draft=True, render=False)
+            if self._expanded:
+                self._render_messages()
         self.expand()
-        self._render_messages()
+        self._draft_render_timer.start()
         self.activity.emit()
 
     def finalize_assistant(self, content: str) -> None:
         content = content.strip()
         self._streaming = False
+        self._draft_render_timer.stop()
         if not content:
             self._render()
             return
         if self._messages and self._messages[-1].role == "assistant" and self._messages[-1].draft:
             self._messages[-1].content = content
             self._messages[-1].draft = False
+            self._flush_draft_render()
         else:
             self._append("assistant", content, render=False)
+            self._render_messages()
         self.expand()
-        self._render_messages()
         self.activity.emit()
 
     def show_status(self, text: str, *, expand: bool = False) -> None:
@@ -286,7 +341,7 @@ class ConversationPanel(QWidget):
             "QPushButton#iconButton:hover { background: rgba(255, 236, 248, 73); }"
             "QPushButton#secondaryButton { background: rgba(255, 238, 248, 31); color: #fff9fd; border: 1px solid rgba(255, 242, 250, 68); border-radius: 9px; padding: 4px 10px; }"
             "QPushButton#primaryButton { background: #ffe2f0; color: #4d3657; border: none; border-radius: 9px; padding: 4px 11px; font-weight: 600; }"
-            "QPushButton#sendButton { background: #ffe1ef; color: #56365c; border: 1px solid rgba(255, 255, 255, 120); border-radius: 17px; font-size: 18px; font-weight: 700; }"
+            "QPushButton#sendButton { background: #ffe1ef; color: #56365c; border: 1px solid rgba(255, 255, 255, 120); border-radius: 17px; }"
             "QPushButton#sendButton:hover { background: #fff0f7; }"
             "QTextEdit#composer { background: rgba(50, 38, 66, 74); color: #fff9fd; border: 1px solid rgba(255, 236, 248, 68); border-radius: 15px; padding: 7px 10px; }"
             "QTextEdit#composer:focus { border: 1px solid rgba(165, 232, 246, 178); background: rgba(54, 41, 73, 105); }"
@@ -312,9 +367,9 @@ class ConversationPanel(QWidget):
         compact_subtitle = QLabel("✦ Hermes · 本地管家", self.compact_frame)
         compact_subtitle.setObjectName("secondaryLabel")
         compact_subtitle.setStyleSheet("font-size: 10px;")
-        self.expand_button = QPushButton("⌃", self.compact_frame)
+        self.expand_button = IconButton("expand", "展开对话", self.compact_frame)
         self.expand_button.setObjectName("iconButton")
-        self.expand_button.setFixedSize(29, 25)
+        self.expand_button.setFixedSize(30, 30)
         compact_header.addWidget(compact_avatar)
         compact_header.addWidget(compact_title)
         compact_header.addWidget(compact_subtitle)
@@ -352,12 +407,12 @@ class ConversationPanel(QWidget):
         title_stack.setSpacing(0)
         title_stack.addWidget(title)
         title_stack.addWidget(subtitle)
-        self.collapse_button = QPushButton("⌄", self.expanded_frame)
+        self.collapse_button = IconButton("collapse", "收起对话", self.expanded_frame)
         self.collapse_button.setObjectName("iconButton")
-        self.collapse_button.setFixedSize(29, 25)
-        self.settings_button = QPushButton("⚙", self.expanded_frame)
+        self.collapse_button.setFixedSize(30, 30)
+        self.settings_button = IconButton("settings", "设置", self.expanded_frame)
         self.settings_button.setObjectName("iconButton")
-        self.settings_button.setFixedSize(29, 25)
+        self.settings_button.setFixedSize(30, 30)
         header_layout.addWidget(avatar)
         header_layout.addLayout(title_stack)
         header_layout.addStretch(1)
@@ -412,7 +467,7 @@ class ConversationPanel(QWidget):
         self.composer.setObjectName("composer")
         self.composer.setPlaceholderText("和爱弥斯说点什么…（Enter 发送，Shift+Enter 换行）")
         self.composer.setFixedHeight(50)
-        self.send_button = QPushButton("↑", self.expanded_frame)
+        self.send_button = IconButton("send", "发送消息", self.expanded_frame)
         self.send_button.setObjectName("sendButton")
         self.send_button.setFixedSize(36, 36)
         composer_layout.addWidget(self.composer, 1)
@@ -453,10 +508,12 @@ class ConversationPanel(QWidget):
         self.status_label.setText(self._status_text or "已就绪")
         last_user = next((item.content for item in reversed(self._messages) if item.role == "user"), "")
         last_assistant = next((item.content for item in reversed(self._messages) if item.role == "assistant"), self._status_text)
+        last_assistant = markdown_to_plain(last_assistant)
         self.compact_user.setText(self._elide(f"你：{last_user}") if last_user else "爱弥斯正在待命")
         self.compact_assistant.setText(self._elide(f"爱弥斯：{last_assistant}") if last_assistant else "点击展开连续对话")
 
     def _render_messages(self) -> None:
+        self._draft_browser = None
         while self.history_layout.count() > 1:
             item = self.history_layout.takeAt(0)
             widget = item.widget()
@@ -464,6 +521,21 @@ class ConversationPanel(QWidget):
                 widget.deleteLater()
         for message in self._messages:
             self.history_layout.insertWidget(self.history_layout.count() - 1, self._message_card(message))
+        self._render_status()
+        if self._expanded:
+            self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
+
+    def _flush_draft_render(self) -> None:
+        if self._draft_browser is None or not self._messages:
+            return
+        message = self._messages[-1]
+        if message.role != "assistant":
+            return
+        self._draft_browser.setHtml(render_markdown(message.content + ("  …" if message.draft else "")))
+        frame = self._draft_browser.parentWidget()
+        if isinstance(frame, QFrame):
+            self._draft_browser.document().setTextWidth(frame.maximumWidth() - 22)
+        self._draft_browser.setFixedHeight(max(24, int(self._draft_browser.document().size().height()) + 6))
         self._render_status()
         if self._expanded:
             self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
@@ -479,10 +551,15 @@ class ConversationPanel(QWidget):
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(11, 8, 11, 8)
         frame_layout.setSpacing(0)
-        content = QLabel(message.content + ("  …" if message.draft else ""), frame)
-        content.setWordWrap(True)
-        content.setTextFormat(Qt.PlainText)
-        content.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        if message.role == "assistant":
+            content = self._assistant_content(message.content + ("  …" if message.draft else ""), frame)
+            if message.draft:
+                self._draft_browser = content
+        else:
+            content = QLabel(message.content, frame)
+            content.setWordWrap(True)
+            content.setTextFormat(Qt.PlainText)
+            content.setTextInteractionFlags(Qt.TextSelectableByMouse)
         frame_layout.addWidget(content)
         if message.role == "user":
             frame.setObjectName("messageOutgoing")
@@ -493,6 +570,34 @@ class ConversationPanel(QWidget):
             layout.addWidget(frame)
             layout.addStretch(1)
         return row
+
+    def _assistant_content(self, text: str, frame: QFrame) -> QTextBrowser:
+        content = QTextBrowser(frame)
+        content.setOpenLinks(False)
+        content.setOpenExternalLinks(False)
+        content.setFrameShape(QFrame.NoFrame)
+        content.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+        content.setStyleSheet(
+            "QTextBrowser { background: transparent; color: #fff9fd; border: none; padding: 0; }"
+            "h1 { font-size: 18px; margin: 3px 0 6px 0; } h2 { font-size: 16px; margin: 3px 0 5px 0; } h3 { font-size: 14px; margin: 2px 0 4px 0; }"
+            "p { margin: 0 0 5px 0; } ul, ol { margin: 2px 0 5px 18px; padding: 0; }"
+            "blockquote { color: #d7c9ed; border-left: 3px solid #9ee9f5; margin: 3px 0; padding-left: 7px; }"
+            "code { font-family: Consolas, 'Courier New', monospace; color: #ffe6b0; background: #302841; }"
+            "pre { font-family: Consolas, 'Courier New', monospace; color: #f7eaf2; background: #211b31; padding: 7px; border-radius: 6px; }"
+            "a { color: #9ee9f5; text-decoration: underline; }"
+        )
+        content.setHtml(render_markdown(text))
+        content.document().setTextWidth(frame.maximumWidth() - 22)
+        content.setFixedHeight(max(24, int(content.document().size().height()) + 6))
+        content.anchorClicked.connect(self._open_link)
+        return content
+
+    @staticmethod
+    def _open_link(url) -> None:  # type: ignore[no-untyped-def]
+        if is_safe_link(url.toString()):
+            QDesktopServices.openUrl(url)
 
     def _elide(self, text: str) -> str:
         return self.fontMetrics().elidedText(text.replace("\n", " "), Qt.ElideRight, 320)

@@ -1,42 +1,33 @@
 from __future__ import annotations
 
+import logging
 import random
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPoint, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QMovie, QPainter, QPen
-from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QWidget
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QMovie, QPainter, QPen
+from PySide6.QtWidgets import QInputDialog, QLabel, QWidget
 
+from .activity_monitor import ActivityMonitor
 from .ameath_runtime import AmeathRuntimeService
-from .butler_protocol import BubblePriority, BubbleScheduler
-from .config import PROJECT_ROOT, Settings
+from .animation_catalog import ANIMATIONS, HERMES_STATE_ANIMATIONS, IDLE_ANIMATIONS
+from .bubble_policy import BubblePriority, BubbleScheduler
+from .companion_behavior import CompanionBehavior
+from .companion_controller import CompanionController
+from .config import Settings
 from .conversation_panel import ConversationPanel
 from .hermes_desktop_client import HermesDesktopClient
 from .hermes_settings import HermesSettingsService
+from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateService
+from .pet_state import PetStateEngine, PetStateStore
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
+from .runtime_supervisor import RuntimeSupervisor
 from .settings_dialog import SettingsDialog
 
-
-ANIMATIONS = {
-    "idle_soft": "idle1.gif", "idle_alert": "idle2.gif", "idle_happy": "idle3.gif", "idle_sleepy": "idle4.gif",
-    "move": "move.gif", "drag": "drag.gif", "notice": "screen1.gif", "sad": "screen2.gif",
-    "attention": "screen3.gif", "thinking": "screen4.gif", "busy": "screen5.gif", "rest": "screen6.gif",
-    "question": "screen7.gif", "music": "ameath.gif",
-}
-ANIMATION_LABELS = {
-    "idle_soft": "待机：眨眼", "idle_alert": "待机：注意", "idle_happy": "待机：微笑", "idle_sleepy": "待机：困倦",
-    "move": "移动过渡", "drag": "拖动反馈", "notice": "关注你", "sad": "难过", "attention": "回应你",
-    "thinking": "思考", "busy": "专注", "rest": "休息", "question": "等待指令", "music": "小小音乐会",
-}
-IDLE_ANIMATIONS = ("idle_soft", "idle_alert", "idle_happy", "idle_sleepy")
-GATEWAY_ANIMATIONS = {
-    "thinking": "thinking", "running": "busy", "analyzing": "thinking", "building": "busy",
-    "searching": "attention", "permission": "question", "celebrating": "music", "failed": "sad",
-    "idle": "idle_soft", "attention": "attention",
-}
-
-
+LOGGER = logging.getLogger("digital_pet.runtime")
 class NativePulse(QWidget):
     """A small local animation for Hermes-originated notifications."""
 
@@ -85,16 +76,33 @@ class NativePulse(QWidget):
 
 
 class PetWindow(QWidget):
+    context_menu_requested = Signal()
+    proactive_changed = Signal(bool)
     PET_SIZE = 200
 
-    def __init__(self, settings: Settings, runtime: AmeathRuntimeService | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        runtime: AmeathRuntimeService | None = None,
+        *,
+        shared_hermes: bool = False,
+        backend_reconfigure: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__()
         self.settings = settings
+        self.setWindowIcon(QIcon(str(settings.asset_root / "gifs" / "ameath.ico")))
         self._settings_store = UISettingsStore(settings.data_root)
         self.preferences = self._settings_store.load()
+        self._pet_state = PetStateEngine(PetStateStore(settings.data_root), self.preferences)
+        self._activity_monitor = ActivityMonitor()
         self._startup_manager = StartupManager(settings.launch_command)
         self._runtime = runtime or AmeathRuntimeService(settings)
-        self._hermes_settings = HermesSettingsService(
+        self._shared_hermes = shared_hermes
+        self._backend_reconfigure = backend_reconfigure
+        self._close_handler: Callable[[], bool] | None = None
+        self._auto_game_mode = False
+        self._manual_game_mode = False
+        self._hermes_settings = None if shared_hermes else HermesSettingsService(
             settings.hermes_home,
             python=settings.hermes_cli_python,
             source=settings.hermes_source,
@@ -103,20 +111,36 @@ class PetWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._drag_started = False
         self._movie: QMovie | None = None
+        self._movie_cache: dict[str, QMovie] = {}
         self._bubble_scheduler = BubbleScheduler()
         self._pending_action: dict[str, Any] | None = None
         self._current_animation = "idle_soft"
         self._paused = False
+        self._behavior = CompanionBehavior()
         self._gateway = HermesDesktopClient(settings, self)
         self._gateway.connected.connect(self._on_gateway_connected)
         self._gateway.disconnected.connect(self._on_gateway_disconnected)
         self._gateway.event_received.connect(self._on_gateway_event)
+        self._supervisor = RuntimeSupervisor(self._runtime, shared=shared_hermes, parent=self)
+        self._supervisor.status_changed.connect(self._on_supervisor_status)
+        self._supervisor.connection_allowed.connect(self._on_connection_allowed)
+        self._update_controller = HermesUpdateController(
+            HermesUpdateService(self._runtime.settings, shared=shared_hermes),
+            self._runtime,
+            maintenance=self._supervisor.set_maintenance,
+            install_allowed=self._hermes_update_allowed,
+            auto_check=self.preferences.hermes_update_checks_enabled,
+            parent=self,
+        )
+        self._update_controller.update_available.connect(self._on_hermes_update_available)
+        self._update_controller.completed.connect(self._on_hermes_updated)
+        self._update_controller.failed.connect(self._on_hermes_update_failed)
 
         self._settle_timer = QTimer(self)
         self._settle_timer.setSingleShot(True)
         self._settle_timer.timeout.connect(self._return_to_idle)
         self._idle_timer = QTimer(self)
-        self._idle_timer.setInterval(9_000)
+        self._idle_timer.setInterval(5_000)
         self._idle_timer.timeout.connect(self._auto_switch)
         self._rest_timer = QTimer(self)
         self._rest_timer.setSingleShot(True)
@@ -124,9 +148,32 @@ class PetWindow(QWidget):
         self._conversation_timer = QTimer(self)
         self._conversation_timer.setSingleShot(True)
         self._conversation_timer.timeout.connect(self._collapse_conversation_when_idle)
+        self._position_timer = QTimer(self)
+        self._position_timer.setSingleShot(True)
+        self._position_timer.timeout.connect(self._persist_position)
+        self._companion = CompanionController(
+            self.preferences,
+            self._pet_state,
+            self._activity_monitor,
+            self._behavior,
+            load_animation=self._load_animation,
+            react=self._react,
+            is_game_mode=lambda: self.game_mode_active,
+            is_paused=lambda: self._paused,
+            is_dragging=lambda: self._drag_offset is not None,
+            has_pending_action=lambda: self._pending_action is not None,
+            is_settling=self._settle_timer.isActive,
+            is_conversation_expanded=lambda: self.conversation.is_expanded,
+            set_auto_game_mode=self._set_auto_game_mode,
+            parent=self,
+        )
+        # Kept as a narrow internal compatibility handle for existing tests and
+        # diagnostic tooling; timer ownership remains in CompanionController.
+        self._proactive_timer = self._companion.proactive_timer
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.pet = QLabel(self)
         self.pet.setAlignment(Qt.AlignCenter)
         self.conversation = ConversationPanel(self)
@@ -140,13 +187,15 @@ class PetWindow(QWidget):
         self._native_pulse = NativePulse(self)
         self.apply_preferences(self.preferences)
         self._layout_window()
+        self._restore_window_position()
         if not self._load_animation(self._current_animation):
             self.pet.setText("未找到本地角色素材")
             self.pet.setStyleSheet("color: white; background: rgba(20, 30, 48, 160); border-radius: 16px;")
         self._speak("正在连接 Hermes Gateway…", BubblePriority.ACTIVITY)
         self._idle_timer.start()
+        self._companion.start()
         self._register_activity()
-        self._gateway.start()
+        self._supervisor.start()
 
     def _asset(self, filename: str) -> Path:
         return self.settings.asset_root / "gifs" / filename
@@ -155,14 +204,17 @@ class PetWindow(QWidget):
         source = self._asset(ANIMATIONS[name])
         if not source.exists():
             return False
-        movie = QMovie(str(source), parent=self)
-        movie.setScaledSize(QSize(self.preferences.pet_size, self.preferences.pet_size))
-        movie.setSpeed(self.preferences.animation_speed)
-        if not movie.isValid():
-            return False
-        if self._movie is not None:
+        movie = self._movie_cache.get(name)
+        if movie is None:
+            movie = QMovie(str(source), parent=self)
+            movie.setScaledSize(QSize(self.preferences.pet_size, self.preferences.pet_size))
+            movie.setSpeed(self.preferences.animation_speed)
+            if not movie.isValid():
+                movie.deleteLater()
+                return False
+            self._movie_cache[name] = movie
+        if self._movie is not None and self._movie is not movie:
             self._movie.stop()
-            self._movie.deleteLater()
         self._movie = movie
         self.pet.setMovie(movie)
         movie.start()
@@ -171,19 +223,37 @@ class PetWindow(QWidget):
         return True
 
     def apply_preferences(self, preferences: DesktopPreferences, *, update_window_flags: bool = True) -> None:
+        previous = self.preferences
         self.preferences = preferences
+        self._pet_state.update_preferences(preferences)
+        if hasattr(self, "_update_controller"):
+            self._update_controller.set_auto_check(preferences.hermes_update_checks_enabled)
         self.conversation.apply_preferences(preferences)
-        if self._movie is not None:
-            self._movie.setScaledSize(QSize(preferences.pet_size, preferences.pet_size))
-            self._movie.setSpeed(preferences.animation_speed)
+        for movie in self._movie_cache.values():
+            movie.setScaledSize(QSize(preferences.pet_size, preferences.pet_size))
+            movie.setSpeed(preferences.animation_speed)
         if update_window_flags:
-            flags = Qt.FramelessWindowHint | Qt.Tool
-            if preferences.always_on_top:
-                flags |= Qt.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            if self.isVisible():
-                self.show()
+            self._refresh_window_flags()
         self._layout_window()
+        if (
+            previous.proactive_enabled != preferences.proactive_enabled
+            or previous.proactive_max_interval_minutes != preferences.proactive_max_interval_minutes
+        ):
+            self._companion.update_preferences(preferences)
+
+    @property
+    def game_mode_active(self) -> bool:
+        return self._manual_game_mode or self._auto_game_mode
+
+    def _refresh_window_flags(self) -> None:
+        """Changing flags hides a Qt window, so capture visibility beforehand."""
+        was_visible = self.isVisible()
+        flags = Qt.FramelessWindowHint | Qt.Tool
+        if self.preferences.always_on_top and not self.game_mode_active:
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        if was_visible:
+            self.show()
 
     def _layout_window(self) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
@@ -199,15 +269,18 @@ class PetWindow(QWidget):
         self.pet.setGeometry(pet_left, pet_top, pet_size, pet_size)
         self._native_pulse.setGeometry(pet_left, pet_top, pet_size, pet_size)
 
-    def _react(self, animation: str, text: str, duration_ms: int = 2_000, *, priority: BubblePriority = BubblePriority.ACTIVITY) -> None:
+    def _react(self, animation: str, text: str, duration_ms: int = 2_000, *, priority: BubblePriority = BubblePriority.ACTIVITY) -> bool:
         self._settle_timer.stop()
         self._load_animation(animation)
-        self._speak(text, priority)
+        shown = self._speak(text, priority)
         self._settle_timer.start(duration_ms)
+        return shown
 
-    def _speak(self, text: str, priority: BubblePriority = BubblePriority.ACTIVITY) -> None:
+    def _speak(self, text: str, priority: BubblePriority = BubblePriority.ACTIVITY) -> bool:
         if self._bubble_scheduler.should_show(priority):
             self.conversation.show_status(text)
+            return True
+        return False
 
     def _register_activity(self) -> None:
         self._rest_timer.start(45_000)
@@ -235,15 +308,99 @@ class PetWindow(QWidget):
             self._load_animation(random.choice(IDLE_ANIMATIONS))
 
     def _auto_switch(self) -> None:
+        fullscreen = self.preferences.auto_game_mode and self._activity_monitor.fullscreen_foreground()
+        self._set_auto_game_mode(fullscreen)
         if self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive():
             return
         self._load_animation(random.choice(IDLE_ANIMATIONS))
 
+    def trigger_proactive_now(self) -> bool:
+        """Show one locally authored companion moment on the user's request."""
+        return self._companion.trigger_proactive_now()
+
+    def _trigger_micro_motion(self) -> None:
+        """Compatibility hook for the former window-owned motion timer."""
+        self._companion._trigger_micro_motion()
+
+    def _note_user_interaction(self) -> None:
+        self._companion.record_user_interaction()
+
+    def _set_auto_game_mode(self, enabled: bool) -> None:
+        if enabled == self._auto_game_mode:
+            return
+        self._auto_game_mode = enabled
+        self._refresh_window_flags()
+        if enabled:
+            self._speak("检测到全屏应用，已暂停主动互动。")
+
+    def toggle_game_mode(self) -> None:
+        """Manual game mode is session-only and never rewrites user preferences."""
+        self._manual_game_mode = not self._manual_game_mode
+        self._refresh_window_flags()
+        self._speak("已开启游戏模式。" if self._manual_game_mode else "已恢复置顶显示。")
+
+    def toggle_proactive(self) -> None:
+        preferences = replace(self.preferences, proactive_enabled=not self.preferences.proactive_enabled)
+        self._save_preferences(preferences)
+        self.proactive_changed.emit(preferences.proactive_enabled)
+        self._speak("已暂停主动互动。" if not preferences.proactive_enabled else "已恢复适度主动陪伴。")
+
+    def reconnect_gateway(self) -> None:
+        self._supervisor.reconnect_now()
+        self._speak("正在检查 Hermes Gateway。")
+
+    def _on_connection_allowed(self, allowed: bool) -> None:
+        if allowed:
+            self._gateway.start()
+        else:
+            self._gateway.close()
+
+    def _on_supervisor_status(self, status: str) -> None:
+        if not self._gateway.is_connected:
+            self._speak(status)
+
+    def _save_preferences(self, preferences: DesktopPreferences) -> None:
+        self._settings_store.save(preferences)
+        self.apply_preferences(preferences)
+
+    def set_close_handler(self, handler: Callable[[], bool]) -> None:
+        self._close_handler = handler
+
+    def _restore_window_position(self) -> None:
+        screens = QGuiApplication.screens()
+        screen = next((item for item in screens if item.name() == self.preferences.window_screen), None)
+        screen = screen or self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        if self.preferences.window_x < 0 or self.preferences.window_y < 0:
+            self.move(area.center() - self.rect().center())
+            return
+        x = min(max(self.preferences.window_x, area.left()), area.right() - min(40, self.width()))
+        y = min(max(self.preferences.window_y, area.top()), area.bottom() - min(40, self.height()))
+        self.move(x, y)
+
+    def moveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if hasattr(self, "_position_timer"):
+            self._position_timer.start(350)
+        super().moveEvent(event)
+
+    def _persist_position(self) -> None:
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        preferences = replace(self.preferences, window_screen=screen.name() if screen is not None else "", window_x=self.x(), window_y=self.y())
+        if preferences != self.preferences:
+            self._settings_store.save(preferences)
+            self.preferences = preferences
+            self._pet_state.update_preferences(preferences)
+
     def _rest_after_inactivity(self) -> None:
         if self._drag_offset is None and self._pending_action is None and not self._paused:
-            self._react("rest", "我会在这里等待 Hermes 的下一条消息。", 4_000)
+            self._load_animation("sleepy_stretch")
+            self._settle_timer.start(2_200)
+        self._rest_timer.start(90_000)
 
     def _on_gateway_connected(self) -> None:
+        self._update_controller.gateway_ready()
         self._react("attention", "已连接到 Hermes。", 1_500, priority=BubblePriority.CHAT)
 
     def _on_gateway_disconnected(self, message: str) -> None:
@@ -256,7 +413,7 @@ class PetWindow(QWidget):
             self._react("attention", "爱弥斯已作为 Hermes 桌面终端上线。", 1_800, priority=BubblePriority.CHAT)
         elif event_type == "status":
             state = str(payload.get("state", "thinking"))
-            self._load_animation(GATEWAY_ANIMATIONS.get(state, "thinking"))
+            self._load_animation(HERMES_STATE_ANIMATIONS.get(state, "thinking"))
             content = str(payload.get("content", ""))
             if content:
                 self.conversation.show_status(content, expand=True)
@@ -326,19 +483,22 @@ class PetWindow(QWidget):
 
     def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
-        if self._drag_offset is None and not self._settle_timer.isActive():
-            self._react("notice", "我在这里。", 1_500)
+        self._companion.enter_hover()
         super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._companion.leave_hover()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
         if event.button() == Qt.LeftButton:
+            self._note_user_interaction()
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._drag_started = False
-            self._react("notice", "请问有什么吩咐？", 1_500)
             event.accept()
         elif event.button() == Qt.RightButton:
-            self._show_menu()
+            self.context_menu_requested.emit()
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -360,26 +520,23 @@ class PetWindow(QWidget):
             self._drag_offset = None
             self._drag_started = False
             self._register_activity()
-            self._react("move" if dragged else "attention", "位置已更新。" if dragged else "我在听。", 1_200)
+            if dragged:
+                self._companion.trigger_drag_interaction()
+            else:
+                self._companion.schedule_click()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
 
-    def _show_menu(self) -> None:
-        menu = QMenu(self)
-        chat = QAction("和 Hermes 聊天", self)
-        chat.triggered.connect(self.open_chat)
-        menu.addAction(chat)
-        settings = QAction("设置", self)
-        settings.triggered.connect(self.open_settings)
-        menu.addAction(settings)
-        pause = QAction("暂停动画" if not self._paused else "继续动画", self)
-        pause.triggered.connect(self.toggle_pause)
-        menu.addAction(pause)
-        quit_action = QAction("退出桌宠", self)
-        quit_action.triggered.connect(self.close)
-        menu.addAction(quit_action)
-        menu.exec(QCursor.pos())
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.button() == Qt.LeftButton:
+            self._companion.cancel_click()
+            self._note_user_interaction()
+            self._react("greeting", "想说点什么吗？", 1_600)
+            self.open_chat()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def toggle_pause(self) -> None:
         if self._movie is None:
@@ -393,6 +550,10 @@ class PetWindow(QWidget):
             self._paused = False
             self._speak("继续播放。")
 
+    @property
+    def animation_paused(self) -> bool:
+        return self._paused
+
     def open_chat(self) -> None:
         self.conversation.expand(focus_input=True)
 
@@ -404,9 +565,43 @@ class PetWindow(QWidget):
             self._hermes_settings,
             self.apply_preferences,
             self,
-            onboard=self.open_onboarding,
+            onboard=None if self._shared_hermes else self.open_onboarding,
+            shared_hermes=self._shared_hermes,
+            backend_reconfigure=self._backend_reconfigure,
+            backend_status=str(getattr(self._runtime, "status_summary", "")),
+            update_controller=self._update_controller,
         )
         dialog.exec()
+
+    def _hermes_update_allowed(self) -> bool:
+        return (
+            self._pending_action is None
+            and not self.conversation.is_streaming
+            and self._drag_offset is None
+        )
+
+    def _on_hermes_update_available(self, value: object) -> None:
+        if isinstance(value, HermesUpdateInfo):
+            self._speak(
+                f"Hermes 有新版本 {value.target_revision[:8]}，可以在设置里确认更新。",
+                BubblePriority.CHAT,
+            )
+
+    def _on_hermes_updated(self, value: object) -> None:
+        if not isinstance(value, HermesUpdateResult):
+            return
+        self.settings = self._runtime.settings
+        if not self._shared_hermes:
+            self._hermes_settings = HermesSettingsService(
+                self.settings.hermes_home,
+                python=self.settings.hermes_cli_python,
+                source=self.settings.hermes_source,
+                restart_handler=self._runtime.restart_gateway,
+            )
+        self._speak("Hermes 已更新并重新连接。", BubblePriority.CHAT)
+
+    def _on_hermes_update_failed(self, message: str) -> None:
+        LOGGER.warning("Hermes update failed: %s", message)
 
     def open_onboarding(self) -> None:
         from .onboarding import OnboardingDialog
@@ -416,6 +611,7 @@ class PetWindow(QWidget):
 
     def _send_chat_message(self, text: str) -> None:
         self._register_activity()
+        self._note_user_interaction()
         self.conversation.add_user_message(text)
         self._load_animation("busy")
         self.conversation.show_status("消息已交给 Hermes…")
@@ -423,5 +619,16 @@ class PetWindow(QWidget):
             self._react("sad", "Hermes Gateway 尚未就绪。", 3_000, priority=BubblePriority.ERROR)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._update_controller.busy:
+            self._speak("Hermes 正在更新或验证，完成前请不要退出。", BubblePriority.ERROR)
+            event.ignore()
+            return
+        if self._close_handler is not None and self._close_handler():
+            event.ignore()
+            return
+        # No timer may call back into a partially destroyed native window.
+        for timer in self.findChildren(QTimer):
+            timer.stop()
+        self._supervisor.stop()
         self._gateway.close()
         super().closeEvent(event)

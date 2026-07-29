@@ -75,13 +75,21 @@ class CredentialStore:
         temporary.replace(self.path)
 
     def load(self) -> tuple[str, str] | None:
+        credential, _reason = self.load_with_status()
+        return credential
+
+    def load_with_status(self) -> tuple[tuple[str, str] | None, str]:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             provider = str(payload["provider"])
             encrypted = base64.b64decode(str(payload["blob"]), validate=True)
-            return provider, _unprotect(encrypted).decode("utf-8")
-        except (CredentialError, OSError, ValueError, KeyError, UnicodeDecodeError):
-            return None
+            return (provider, _unprotect(encrypted).decode("utf-8")), "available"
+        except FileNotFoundError:
+            return None, "missing"
+        except CredentialError:
+            return None, "dpapi-unavailable"
+        except (OSError, ValueError, KeyError, UnicodeDecodeError):
+            return None, "invalid"
 
     def clear(self) -> None:
         try:

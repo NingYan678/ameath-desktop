@@ -3,9 +3,9 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTextBrowser
 
-from digital_pet.conversation_panel import ConversationPanel
+from digital_pet.conversation_panel import ConversationPanel, IconButton
 from digital_pet.preferences import DesktopPreferences
 
 
@@ -37,6 +37,18 @@ def test_streaming_draft_is_replaced_by_one_final_assistant_message(app):
         ("assistant", "final", False),
     ]
     assert not panel.is_streaming
+
+
+def test_assistant_markdown_uses_rich_text_but_user_text_stays_plain(app):
+    panel = ConversationPanel()
+    panel.add_user_message("<b>user</b>")
+    panel.finalize_assistant("# 标题\n\n[链接](https://example.com)")
+
+    browsers = panel.findChildren(QTextBrowser)
+    assert len(browsers) == 1
+    assert "标题" in browsers[0].toPlainText()
+    assert "https://example.com" in browsers[0].toHtml()
+    assert panel.messages[0].content == "<b>user</b>"
 
 
 def test_auto_collapse_waits_for_unsent_text_or_native_action(app):
@@ -71,3 +83,22 @@ def test_panel_opacity_updates_the_surface_and_message_layers(app):
     assert "QFrame#messageIncoming { background: rgba(52, 43, 78, 200)" in opaque_style
     assert "QFrame#messageOutgoing { background: rgba(126, 112, 194, 166)" in transparent_style
     assert "QFrame#messageOutgoing { background: rgba(126, 112, 194, 228)" in opaque_style
+
+
+def test_common_chat_actions_use_accessible_icon_buttons(app):
+    panel = ConversationPanel()
+
+    for button, label in (
+        (panel.expand_button, "展开对话"),
+        (panel.collapse_button, "收起对话"),
+        (panel.settings_button, "设置"),
+        (panel.send_button, "发送消息"),
+    ):
+        assert isinstance(button, IconButton)
+        assert button.text() == ""
+        assert button.toolTip() == label
+        assert button.accessibleName() == label
+        assert button.focusPolicy().name == "StrongFocus"
+
+    assert panel.confirm_button.text()
+    assert panel.cancel_button.text()
