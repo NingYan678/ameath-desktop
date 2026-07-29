@@ -6,7 +6,6 @@ import html
 import re
 from urllib.parse import urlparse
 
-
 _SAFE_LINK_SCHEMES = {"http", "https", "mailto"}
 _HEADING = re.compile(r"^(#{1,3})\s+(.+)$")
 _ORDERED = re.compile(r"^\d+[.)]\s+(.+)$")

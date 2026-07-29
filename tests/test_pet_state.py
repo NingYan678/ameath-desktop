@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta
 import random
+from datetime import datetime, timedelta
 
 from digital_pet.pet_state import CLICK_INTERACTIONS, DRAG_INTERACTIONS, PROACTIVE_EVENTS, PetStateEngine, PetStateStore
 from digital_pet.preferences import DesktopPreferences
@@ -38,7 +38,7 @@ def test_proactive_has_no_daily_cap_and_remembers_recent_events(tmp_path):
 
     assert len(events) == 20
     assert len({event.event_id for event in events[:12]}) == 12
-    assert all(left.category != right.category for left, right in zip(events, events[1:]))
+    assert all(left.category != right.category for left, right in zip(events, events[1:], strict=False))
     assert PetStateStore(tmp_path).load().recent_proactive_ids == tuple(event.event_id for event in events[-12:])
 
 

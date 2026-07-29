@@ -9,7 +9,6 @@ from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, QT
 
 from .runtime_descriptor import RuntimeHealth
 
-
 LOGGER = logging.getLogger("digital_pet.runtime")
 
 

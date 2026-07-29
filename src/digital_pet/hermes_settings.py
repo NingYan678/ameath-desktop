@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
-
 
 MANAGED_TOOLSETS = (
     "browser", "clarify", "code_execution", "computer_use", "cronjob", "delegation", "file",

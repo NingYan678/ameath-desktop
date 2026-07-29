@@ -12,110 +12,27 @@ import time
 import urllib.request
 import uuid
 import zipfile
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
-from enum import Enum
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Protocol
 
-from PySide6.QtCore import QObject, QTimer, Signal
-
-from .background_task import FunctionTask, start_task
 from .config import Settings, packaged_runtime_python
 from .diagnostics import DiagnosticsService
+from .hermes_update_state import (
+    OFFICIAL_ARCHIVE,
+    OFFICIAL_REPOSITORY,
+    OFFLINE_RETRY_INTERVAL,
+    HermesUpdateInfo,
+    HermesUpdateResult,
+    HermesUpdateState,
+    HermesUpdateStateStore,
+    HermesUpdateStatus,
+    UpdateRuntime,
+)
 from .runtime_descriptor import RuntimeHealth
 from .storage import atomic_write_json
 
-
 LOGGER = logging.getLogger("digital_pet.runtime")
-OFFICIAL_REPOSITORY = "https://github.com/NousResearch/hermes-agent.git"
-OFFICIAL_ARCHIVE = "https://github.com/NousResearch/hermes-agent/archive/{revision}.zip"
-CHECK_INTERVAL = timedelta(hours=24)
-OFFLINE_RETRY_INTERVAL = timedelta(hours=6)
-
-
-class HermesUpdateStatus(str, Enum):
-    IDLE = "idle"
-    CHECKING = "checking"
-    AVAILABLE = "available"
-    UPDATING = "updating"
-    VERIFYING = "verifying"
-    FAILED = "failed"
-
-
-@dataclass(frozen=True)
-class HermesUpdateInfo:
-    current_revision: str
-    target_revision: str
-    source_url: str
-    runtime_kind: str
-    update_available: bool
-    checked_at: str
-    current_branch: str = ""
-
-
-@dataclass(frozen=True)
-class HermesUpdateResult:
-    previous_revision: str
-    current_revision: str
-    updated: bool
-    log_path: Path
-    runtime_root: Path | None = None
-
-
-@dataclass(frozen=True)
-class HermesUpdateState:
-    last_checked_at: str = ""
-    retry_after: str = ""
-    target_revision: str = ""
-    notified_revision: str = ""
-    last_error: str = ""
-
-
-class UpdateRuntime(Protocol):
-    settings: Settings
-
-    def stop_gateway(self) -> bool: ...
-    def switch_runtime(self, runtime_root: Path) -> None: ...
-    def prepare(self) -> None: ...
-    def start_gateway(self) -> bool: ...
-    def verify_identity(self) -> RuntimeHealth: ...
-
-
-class HermesUpdateStateStore:
-    """Persist non-secret scheduling and notification state."""
-
-    def __init__(self, data_root: Path) -> None:
-        self.path = data_root / "hermes_update_state.json"
-
-    def load(self) -> HermesUpdateState:
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError
-            return HermesUpdateState(
-                last_checked_at=str(payload.get("last_checked_at", "")),
-                retry_after=str(payload.get("retry_after", "")),
-                target_revision=str(payload.get("target_revision", "")),
-                notified_revision=str(payload.get("notified_revision", "")),
-                last_error=str(payload.get("last_error", "")),
-            )
-        except (OSError, ValueError, TypeError):
-            return HermesUpdateState()
-
-    def save(self, state: HermesUpdateState) -> None:
-        atomic_write_json(self.path, asdict(state))
-
-    def check_due(self, now: datetime | None = None) -> bool:
-        state = self.load()
-        current = now or datetime.now(timezone.utc)
-        retry = _parse_time(state.retry_after)
-        checked = _parse_time(state.last_checked_at)
-        if retry is not None:
-            return current >= retry
-        return checked is None or current - checked >= CHECK_INTERVAL
-
-
 class HermesUpdateService:
     """Blocking update operations; callers run them outside the UI thread."""
 
@@ -150,7 +67,7 @@ class HermesUpdateService:
             return ""
 
     def check(self) -> HermesUpdateInfo:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             current = self.current_revision()
             target = self._remote_revision()
@@ -560,171 +477,6 @@ class HermesUpdateService:
             shutil.copyfileobj(response, output)
 
 
-class HermesUpdateController(QObject):
-    """Own update tasks so closing the settings dialog cannot orphan them."""
-
-    state_changed = Signal(str)
-    info_changed = Signal(object)
-    update_available = Signal(object)
-    completed = Signal(object)
-    failed = Signal(str)
-    _progress_requested = Signal(object)
-
-    def __init__(
-        self,
-        service: HermesUpdateService,
-        runtime: UpdateRuntime,
-        *,
-        maintenance: Callable[[bool], None],
-        install_allowed: Callable[[], bool],
-        auto_check: bool,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.service = service
-        self.runtime = runtime
-        self._maintenance = maintenance
-        self._install_allowed = install_allowed
-        self._auto_check = auto_check
-        self._gateway_ready = False
-        self._state = HermesUpdateStatus.IDLE
-        self._info: HermesUpdateInfo | None = None
-        self._task: FunctionTask | None = None
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._automatic_check)
-        self._progress_requested.connect(self._progress_changed)
-        self.service.progress = self._progress_requested.emit
-
-    @property
-    def state(self) -> HermesUpdateStatus:
-        return self._state
-
-    @property
-    def info(self) -> HermesUpdateInfo | None:
-        return self._info
-
-    @property
-    def busy(self) -> bool:
-        return self._task is not None or self._state in {
-            HermesUpdateStatus.CHECKING,
-            HermesUpdateStatus.UPDATING,
-            HermesUpdateStatus.VERIFYING,
-        }
-
-    def set_auto_check(self, enabled: bool) -> None:
-        self._auto_check = enabled
-        if enabled and self._gateway_ready and not self._timer.isActive():
-            self._timer.start(60_000)
-        elif not enabled:
-            self._timer.stop()
-
-    def gateway_ready(self) -> None:
-        self._gateway_ready = True
-        if self._auto_check and not self._timer.isActive():
-            self._timer.start(60_000)
-
-    def check(self, *, silent: bool = False) -> bool:
-        if self.busy:
-            return False
-        self._set_state(HermesUpdateStatus.CHECKING)
-        task = start_task(
-            self.service.check,
-            succeeded=self._checked,
-            failed=(lambda message: self._check_failed(message, silent)),
-        )
-        self._task = task
-        return True
-
-    def apply(self) -> bool:
-        if self.busy or self._info is None or not self._info.update_available:
-            return False
-        if not self._install_allowed():
-            self.failed.emit("Hermes 正在处理消息或等待确认，请完成后再更新。")
-            return False
-        self._maintenance(True)
-        self._set_state(HermesUpdateStatus.UPDATING)
-        task = start_task(
-            lambda: self.service.apply(self.runtime),
-            succeeded=self._applied,
-            failed=self._apply_failed,
-        )
-        self._task = task
-        return True
-
-    def _automatic_check(self) -> None:
-        if self._auto_check and self.service.state_store.check_due():
-            self.check(silent=True)
-        elif self._auto_check:
-            self._timer.start(60 * 60 * 1_000)
-
-    def _checked(self, result: object) -> None:
-        self._task = None
-        self._info = result if isinstance(result, HermesUpdateInfo) else None
-        state = HermesUpdateStatus.AVAILABLE if self._info and self._info.update_available else HermesUpdateStatus.IDLE
-        self._set_state(state)
-        if self._info is not None:
-            self.info_changed.emit(self._info)
-            stored = self.service.state_store.load()
-            if self._info.update_available and stored.notified_revision != self._info.target_revision:
-                self.service.state_store.save(
-                    HermesUpdateState(
-                        last_checked_at=stored.last_checked_at,
-                        target_revision=stored.target_revision,
-                        notified_revision=self._info.target_revision,
-                    )
-                )
-                self.update_available.emit(self._info)
-        if self._auto_check:
-            self._timer.start(int(CHECK_INTERVAL.total_seconds() * 1_000))
-
-    def _check_failed(self, message: str, silent: bool) -> None:
-        self._task = None
-        self._set_state(HermesUpdateStatus.FAILED)
-        if not silent:
-            self.failed.emit(message)
-        if self._auto_check:
-            self._timer.start(int(OFFLINE_RETRY_INTERVAL.total_seconds() * 1_000))
-
-    def _applied(self, result: object) -> None:
-        self._task = None
-        self._maintenance(False)
-        self._set_state(HermesUpdateStatus.IDLE)
-        if isinstance(result, HermesUpdateResult):
-            self._info = HermesUpdateInfo(
-                result.current_revision,
-                result.current_revision,
-                OFFICIAL_REPOSITORY,
-                self.service.runtime_kind,
-                False,
-                datetime.now(timezone.utc).isoformat(),
-            )
-            self.info_changed.emit(self._info)
-            self.completed.emit(result)
-
-    def _apply_failed(self, message: str) -> None:
-        self._task = None
-        self._maintenance(False)
-        self._set_state(HermesUpdateStatus.FAILED)
-        self.failed.emit(message)
-
-    def _set_state(self, state: HermesUpdateStatus) -> None:
-        self._state = state
-        self.state_changed.emit(state.value)
-
-    def _progress_changed(self, value: object) -> None:
-        if isinstance(value, HermesUpdateStatus):
-            self._set_state(value)
-
-
-def _parse_time(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value)
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalized_remote(value: str) -> str:
     normalized = value.strip().lower().rstrip("/")
     if normalized.endswith(".git"):
@@ -732,3 +484,8 @@ def _normalized_remote(value: str) -> str:
     if normalized.startswith("git@github.com:"):
         normalized = "https://github.com/" + normalized.removeprefix("git@github.com:")
     return normalized
+
+
+# Compatibility export: callers continue importing the controller from this
+# module while the Qt orchestration lives in its own file.
+from .hermes_update_controller import HermesUpdateController  # noqa: F401,E402

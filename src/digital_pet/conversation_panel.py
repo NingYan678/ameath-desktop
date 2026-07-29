@@ -13,14 +13,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QTextEdit,
     QTextBrowser,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from .preferences import DesktopPreferences
 from .markdown_renderer import is_safe_link, markdown_to_plain, render_markdown
+from .preferences import DesktopPreferences
 
 
 @dataclass

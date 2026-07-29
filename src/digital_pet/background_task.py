@@ -8,7 +8,6 @@ from typing import Any
 
 from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QThreadPool, Signal
 
-
 LOGGER = logging.getLogger("digital_pet.runtime")
 
 

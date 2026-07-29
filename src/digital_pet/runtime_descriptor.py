@@ -7,11 +7,11 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 
-class RuntimeHealth(str, Enum):
+class RuntimeHealth(StrEnum):
     VERIFYING = "verifying"
     READY = "ready"
     STOPPED = "stopped"

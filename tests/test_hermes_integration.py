@@ -16,7 +16,6 @@ import pytest
 from digital_pet.config import Settings
 from digital_pet.existing_hermes import ExistingHermesRuntimeService, probe_hermes_home
 
-
 INTEGRATION_HOME = os.getenv("HERMES_INTEGRATION_HOME", "").strip()
 pytestmark = pytest.mark.skipif(not INTEGRATION_HOME, reason="requires disposable HERMES_INTEGRATION_HOME")
 

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass, replace
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -23,12 +23,11 @@ from .runtime_descriptor import (
 )
 from .storage import atomic_write_json
 
-
 LOGGER = logging.getLogger("digital_pet.runtime")
 SelectionMode = Literal["shared", "isolated"]
 
 
-class ProbeStatus(str, Enum):
+class ProbeStatus(StrEnum):
     AVAILABLE = "available"
     MISSING = "missing"
     INCOMPLETE = "incomplete"

@@ -2,7 +2,6 @@ from pathlib import Path
 
 from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -25,9 +24,9 @@ def test_release_uses_one_version_source():
     build = (ROOT / "packaging" / "build_release.py").read_text(encoding="utf-8")
     installer = (ROOT / "packaging" / "Ameath.iss").read_text(encoding="utf-8")
 
-    assert version == "1.0.0"
+    assert version == "1.0.1"
     assert "/DAppVersion={APP_VERSION}" in build
-    assert "Ameath-{#AppVersion}-{#BuildMode}-setup" in installer
+    assert "Ameath-{#AppVersion}-offline-setup" in installer
     assert "#ifndef AppVersion" in installer
     assert "#ifndef AppGuid" in installer
     assert "' + '{#AppGuid}' + '}_is1'" in installer
@@ -47,6 +46,8 @@ def test_release_build_uses_temporary_work_and_a_runtime_asset_allowlist():
     assert "httpx" not in requirements
     assert "pytest" not in requirements
     assert "pytest>=8,<9" in development_requirements
+    assert "runtime-bootstrap.ps1" not in build
+    assert "runtime_url" not in build
 
 
 def test_release_runtime_is_installed_inside_staging_and_pinned_to_hermes_commit():
@@ -64,3 +65,5 @@ def test_release_runtime_is_installed_inside_staging_and_pinned_to_hermes_commit
     assert '"--untracked-files=all"' in build
     assert "is_relative_to(runtime.resolve())" in build
     assert "import hermes_cli" in build
+    assert "--version-file" in build
+    assert "--icon" in build

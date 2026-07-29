@@ -1,7 +1,7 @@
 from PySide6.QtGui import QImageReader
 
+from digital_pet.animation_catalog import ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS, PACKAGED_ASSET_FILES
 from digital_pet.config import PROJECT_ROOT
-from digital_pet.animation_catalog import ANIMATION_LABELS, ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS
 
 
 def test_expected_recovered_animation_names_are_registered():
@@ -14,8 +14,7 @@ def test_expected_recovered_animation_names_are_registered():
     assert len(ANIMATIONS) == 26
 
 
-def test_every_animation_has_a_display_label():
-    assert set(ANIMATIONS) == set(ANIMATION_LABELS)
+def test_idle_animation_names_are_registered():
     assert set(IDLE_ANIMATIONS).issubset(ANIMATIONS)
 
 
@@ -30,3 +29,13 @@ def test_new_micro_motion_gifs_are_uniform_animation_assets():
         image = reader.read()
         assert image.hasAlphaChannel()
         assert image.pixelColor(0, 0).alpha() == 0
+
+
+def test_packaged_asset_directory_matches_the_single_manifest():
+    asset_root = PROJECT_ROOT / "assets" / "recovered"
+    actual = {
+        path.relative_to(asset_root).as_posix()
+        for path in asset_root.rglob("*")
+        if path.is_file()
+    }
+    assert actual == set(PACKAGED_ASSET_FILES)

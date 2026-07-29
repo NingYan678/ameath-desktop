@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import os
@@ -13,11 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
-
 
 PLATFORM_NAME = "ameath_desktop"
 CHAT_ID = "desktop"

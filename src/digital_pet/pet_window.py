@@ -2,29 +2,30 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QMovie, QPainter, QPen
 from PySide6.QtWidgets import QInputDialog, QLabel, QWidget
 
-from .ameath_runtime import AmeathRuntimeService
 from .activity_monitor import ActivityMonitor
-from .animation_catalog import ANIMATIONS, IDLE_ANIMATIONS, MICRO_MOTIONS
-from .butler_protocol import BubblePriority, BubbleScheduler, PET_STATE_ANIMATIONS
+from .ameath_runtime import AmeathRuntimeService
+from .animation_catalog import ANIMATIONS, HERMES_STATE_ANIMATIONS, IDLE_ANIMATIONS
+from .bubble_policy import BubblePriority, BubbleScheduler
+from .companion_behavior import CompanionBehavior
+from .companion_controller import CompanionController
 from .config import Settings
 from .conversation_panel import ConversationPanel
-from .companion_behavior import CompanionBehavior
 from .hermes_desktop_client import HermesDesktopClient
 from .hermes_settings import HermesSettingsService
 from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateService
+from .pet_state import PetStateEngine, PetStateStore
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
-from .pet_state import CLICK_INTERACTIONS, DRAG_INTERACTIONS, CompanionInteraction, PetStateEngine, PetStateStore
 from .runtime_supervisor import RuntimeSupervisor
 from .settings_dialog import SettingsDialog
-
 
 LOGGER = logging.getLogger("digital_pet.runtime")
 class NativePulse(QWidget):
@@ -141,31 +142,34 @@ class PetWindow(QWidget):
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(5_000)
         self._idle_timer.timeout.connect(self._auto_switch)
-        self._motion_timer = QTimer(self)
-        self._motion_timer.setSingleShot(True)
-        self._motion_timer.timeout.connect(self._trigger_micro_motion)
-        self._proactive_timer = QTimer(self)
-        self._proactive_timer.setSingleShot(True)
-        self._proactive_timer.timeout.connect(self._trigger_proactive)
         self._rest_timer = QTimer(self)
         self._rest_timer.setSingleShot(True)
         self._rest_timer.timeout.connect(self._rest_after_inactivity)
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.setInterval(700)
-        self._hover_timer.timeout.connect(self._trigger_hover_motion)
-        self._hover_cooldown_timer = QTimer(self)
-        self._hover_cooldown_timer.setSingleShot(True)
-        self._click_timer = QTimer(self)
-        self._click_timer.setSingleShot(True)
-        self._click_timer.setInterval(180)
-        self._click_timer.timeout.connect(self._trigger_click_interaction)
         self._conversation_timer = QTimer(self)
         self._conversation_timer.setSingleShot(True)
         self._conversation_timer.timeout.connect(self._collapse_conversation_when_idle)
         self._position_timer = QTimer(self)
         self._position_timer.setSingleShot(True)
         self._position_timer.timeout.connect(self._persist_position)
+        self._companion = CompanionController(
+            self.preferences,
+            self._pet_state,
+            self._activity_monitor,
+            self._behavior,
+            load_animation=self._load_animation,
+            react=self._react,
+            is_game_mode=lambda: self.game_mode_active,
+            is_paused=lambda: self._paused,
+            is_dragging=lambda: self._drag_offset is not None,
+            has_pending_action=lambda: self._pending_action is not None,
+            is_settling=self._settle_timer.isActive,
+            is_conversation_expanded=lambda: self.conversation.is_expanded,
+            set_auto_game_mode=self._set_auto_game_mode,
+            parent=self,
+        )
+        # Kept as a narrow internal compatibility handle for existing tests and
+        # diagnostic tooling; timer ownership remains in CompanionController.
+        self._proactive_timer = self._companion.proactive_timer
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -189,8 +193,7 @@ class PetWindow(QWidget):
             self.pet.setStyleSheet("color: white; background: rgba(20, 30, 48, 160); border-radius: 16px;")
         self._speak("正在连接 Hermes Gateway…", BubblePriority.ACTIVITY)
         self._idle_timer.start()
-        self._schedule_proactive()
-        self._schedule_micro_motion()
+        self._companion.start()
         self._register_activity()
         self._supervisor.start()
 
@@ -236,7 +239,7 @@ class PetWindow(QWidget):
             previous.proactive_enabled != preferences.proactive_enabled
             or previous.proactive_max_interval_minutes != preferences.proactive_max_interval_minutes
         ):
-            self._schedule_proactive()
+            self._companion.update_preferences(preferences)
 
     @property
     def game_mode_active(self) -> bool:
@@ -311,67 +314,16 @@ class PetWindow(QWidget):
             return
         self._load_animation(random.choice(IDLE_ANIMATIONS))
 
-    def _schedule_micro_motion(self) -> None:
-        self._motion_timer.stop()
-        self._motion_timer.start(random.randint(18_000, 35_000))
-
-    def _trigger_micro_motion(self) -> None:
-        blocked = self.game_mode_active or self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
-        if blocked:
-            self._motion_timer.start(5_000)
-            return
-        motion = self._behavior.choose_motion(MICRO_MOTIONS)
-        self._load_animation(motion)
-        self._settle_timer.start(1_900)
-        self._schedule_micro_motion()
-
-    def _schedule_proactive(self) -> None:
-        self._proactive_timer.stop()
-        if self.preferences.proactive_enabled:
-            delay = self._pet_state.proactive_delay_ms()
-            LOGGER.info("Ameath proactive interaction scheduled in %d ms", delay)
-            self._proactive_timer.start(delay)
-
-    def _trigger_proactive(self) -> None:
-        auto_fullscreen = self.preferences.auto_game_mode and self._activity_monitor.fullscreen_foreground()
-        fullscreen = self.game_mode_active or auto_fullscreen
-        self._set_auto_game_mode(auto_fullscreen)
-        blocked = self._paused or self._drag_offset is not None or self._pending_action is not None or self._settle_timer.isActive()
-        if blocked:
-            LOGGER.info("Ameath proactive interaction deferred: transient UI activity")
-            self._schedule_proactive()
-            return
-        event = self._pet_state.proactive_event(fullscreen=fullscreen, busy=self.conversation.is_expanded)
-        if event is None:
-            LOGGER.info("Ameath proactive interaction suppressed by a protected state")
-            self._schedule_proactive()
-            return
-        if self._react(event.animation, event.text, 4_000):
-            self._pet_state.record_proactive(event)
-            LOGGER.info("Ameath proactive interaction displayed: %s", event.event_id)
-        else:
-            LOGGER.info("Ameath proactive interaction deferred by bubble priority: %s", event.event_id)
-            self._schedule_proactive()
-            return
-        self._schedule_proactive()
-
     def trigger_proactive_now(self) -> bool:
         """Show one locally authored companion moment on the user's request."""
-        if self._paused or self._drag_offset is not None or self._pending_action is not None:
-            self._speak("等我忙完眼前这件事，就马上来找你。")
-            return False
-        event = self._pet_state.proactive_event(fullscreen=False, busy=self.conversation.is_expanded, manual=True)
-        if event is None:
-            self._speak("我现在没法分心，稍等我一下。")
-            return False
-        if self._react(event.animation, event.text, 4_000):
-            self._pet_state.record_proactive(event)
-        self._schedule_proactive()
-        return True
+        return self._companion.trigger_proactive_now()
+
+    def _trigger_micro_motion(self) -> None:
+        """Compatibility hook for the former window-owned motion timer."""
+        self._companion._trigger_micro_motion()
 
     def _note_user_interaction(self) -> None:
-        self._pet_state.record_interaction()
-        self._schedule_proactive()
+        self._companion.record_user_interaction()
 
     def _set_auto_game_mode(self, enabled: bool) -> None:
         if enabled == self._auto_game_mode:
@@ -461,7 +413,7 @@ class PetWindow(QWidget):
             self._react("attention", "爱弥斯已作为 Hermes 桌面终端上线。", 1_800, priority=BubblePriority.CHAT)
         elif event_type == "status":
             state = str(payload.get("state", "thinking"))
-            self._load_animation(PET_STATE_ANIMATIONS.get(state, "thinking"))
+            self._load_animation(HERMES_STATE_ANIMATIONS.get(state, "thinking"))
             content = str(payload.get("content", ""))
             if content:
                 self.conversation.show_status(content, expand=True)
@@ -531,20 +483,12 @@ class PetWindow(QWidget):
 
     def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
-        if not self._hover_cooldown_timer.isActive():
-            self._hover_timer.start()
+        self._companion.enter_hover()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        self._hover_timer.stop()
+        self._companion.leave_hover()
         super().leaveEvent(event)
-
-    def _trigger_hover_motion(self) -> None:
-        if self._drag_offset is not None or self._pending_action is not None or self._paused or self._settle_timer.isActive():
-            return
-        self._load_animation("curious_peek")
-        self._settle_timer.start(1_500)
-        self._hover_cooldown_timer.start(20_000)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._register_activity()
@@ -577,31 +521,22 @@ class PetWindow(QWidget):
             self._drag_started = False
             self._register_activity()
             if dragged:
-                self._trigger_interaction(DRAG_INTERACTIONS)
+                self._companion.trigger_drag_interaction()
             else:
-                self._click_timer.start()
+                self._companion.schedule_click()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if event.button() == Qt.LeftButton:
-            self._click_timer.stop()
+            self._companion.cancel_click()
             self._note_user_interaction()
             self._react("greeting", "想说点什么吗？", 1_600)
             self.open_chat()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
-
-    def _trigger_click_interaction(self) -> None:
-        self._trigger_interaction(CLICK_INTERACTIONS)
-
-    def _trigger_interaction(self, catalogue: tuple[CompanionInteraction, ...]) -> None:
-        if self._pending_action is not None or self._paused:
-            return
-        item = self._behavior.choose_interaction(catalogue)
-        self._react(item.animation, item.text, item.duration_ms)
 
     def toggle_pause(self) -> None:
         if self._movie is None:

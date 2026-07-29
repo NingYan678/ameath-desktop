@@ -11,7 +11,7 @@ from .storage import atomic_write_json
 
 @dataclass(frozen=True)
 class DesktopPreferences:
-    schema_version: int = 5
+    schema_version: int = 6
     pet_size: int = 200
     compact_width: int = 360
     expanded_width: int = 520
@@ -30,7 +30,6 @@ class DesktopPreferences:
     auto_game_mode: bool = True
     do_not_disturb: bool = False
     hermes_update_checks_enabled: bool = True
-    diagnostics_consent: bool = False
     window_screen: str = ""
     window_x: int = -1
     window_y: int = -1
@@ -78,7 +77,6 @@ class UISettingsStore:
             auto_game_mode=bool(payload.get("auto_game_mode", defaults.auto_game_mode)),
             do_not_disturb=bool(payload.get("do_not_disturb", defaults.do_not_disturb)),
             hermes_update_checks_enabled=bool(payload.get("hermes_update_checks_enabled", defaults.hermes_update_checks_enabled)),
-            diagnostics_consent=bool(payload.get("diagnostics_consent", defaults.diagnostics_consent)),
             window_screen=str(payload.get("window_screen", defaults.window_screen)),
             window_x=self._bounded_int(payload.get("window_x"), defaults.window_x, -1, 32_000),
             window_y=self._bounded_int(payload.get("window_y"), defaults.window_y, -1, 32_000),

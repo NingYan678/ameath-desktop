@@ -10,8 +10,8 @@ from digital_pet.existing_hermes import (
     HermesInstallation,
     ProbeStatus,
     _candidate_homes,
-    probe_hermes_home,
     inspect_hermes_home,
+    probe_hermes_home,
 )
 from digital_pet.runtime_descriptor import RuntimeHealth
 

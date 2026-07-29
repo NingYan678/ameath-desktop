@@ -21,7 +21,6 @@ from .runtime_descriptor import (
     stop_verified_runtime,
 )
 
-
 LOGGER = logging.getLogger("digital_pet.runtime")
 
 

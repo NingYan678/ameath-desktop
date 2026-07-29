@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import sys
-from typing import TypeAlias
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
@@ -13,15 +12,20 @@ from .ameath_runtime import AmeathRuntimeService
 from .application_controller import ApplicationController
 from .config import Settings, application_root, default_data_root, is_packaged, load_settings
 from .diagnostics import DiagnosticsService
-from .existing_hermes import BackendSelectionStore, ExistingHermesRuntimeService, ProbeStatus, discover_existing_hermes, probe_hermes_home
+from .existing_hermes import (
+    BackendSelectionStore,
+    ExistingHermesRuntimeService,
+    ProbeStatus,
+    discover_existing_hermes,
+    probe_hermes_home,
+)
 from .maintenance import reset_user_data
 from .onboarding import OnboardingDialog
 from .pet_window import PetWindow
 from .runtime_choice_dialog import RuntimeChoiceDialog
 from .version import APP_VERSION
 
-
-RuntimeService: TypeAlias = AmeathRuntimeService | ExistingHermesRuntimeService
+type RuntimeService = AmeathRuntimeService | ExistingHermesRuntimeService
 
 
 def _configure_runtime_logging(data_root: Path) -> None:

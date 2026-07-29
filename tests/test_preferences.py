@@ -35,7 +35,7 @@ def test_v2_game_mode_state_is_migrated_back_to_the_default_topmost_setting(tmp_
 
     loaded = store.load()
 
-    assert loaded.schema_version == 5
+    assert loaded.schema_version == 6
     assert loaded.always_on_top is True
 
 
@@ -54,6 +54,6 @@ def test_legacy_application_update_channel_migrates_to_hermes_checks(tmp_path):
 
     loaded = store.load()
 
-    assert loaded.schema_version == 5
+    assert loaded.schema_version == 6
     assert loaded.hermes_update_checks_enabled is True
     assert not hasattr(loaded, "update_channel")

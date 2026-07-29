@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .background_task import FunctionTask, start_task
 from .hermes_settings import MANAGED_TOOLSETS, HermesSettingsService, HermesSettingsSnapshot
 from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateStatus
-from .background_task import FunctionTask, start_task
 from .preferences import DesktopPreferences, StartupManager, UISettingsStore
 
 
@@ -229,8 +229,6 @@ class SettingsDialog(QDialog):
         quiet_row.addWidget(self.quiet_end)
         quiet_row.addWidget(QLabel("时", card))
         quiet_row.addStretch(1)
-        self.diagnostics_consent = QCheckBox("允许匿名崩溃报告（不含聊天、密钥或配置内容）", card)
-        self.diagnostics_consent.setChecked(self._initial.diagnostics_consent)
         self.hermes_update_checks = QCheckBox("每天检查 Hermes 官方更新（安装前仍会确认）", card)
         self.hermes_update_checks.setChecked(self._initial.hermes_update_checks_enabled)
         self.animation_speed.value_changed.connect(self._preview_current)
@@ -252,7 +250,6 @@ class SettingsDialog(QDialog):
         card_layout.addWidget(self.auto_game)
         card_layout.addWidget(self.do_not_disturb)
         card_layout.addLayout(quiet_row)
-        card_layout.addWidget(self.diagnostics_consent)
         card_layout.addWidget(self.hermes_update_checks)
         layout.addWidget(card)
         layout.addStretch(1)
@@ -380,7 +377,6 @@ class SettingsDialog(QDialog):
             quiet_end_hour=self.quiet_end.value(),
             auto_game_mode=self.auto_game.isChecked(),
             do_not_disturb=self.do_not_disturb.isChecked(),
-            diagnostics_consent=self.diagnostics_consent.isChecked(),
             hermes_update_checks_enabled=self.hermes_update_checks.isChecked(),
         )
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import os
-import ctypes
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .ameath_runtime import AmeathRuntimeService, ModelProfile, PROVIDER_DEFAULTS
+from .ameath_runtime import PROVIDER_DEFAULTS, AmeathRuntimeService, ModelProfile
 from .background_task import FunctionTask, start_task
 
 

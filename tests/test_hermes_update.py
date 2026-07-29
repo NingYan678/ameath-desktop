@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,7 +16,6 @@ from digital_pet.hermes_update import (
     HermesUpdateStateStore,
 )
 from digital_pet.runtime_descriptor import RuntimeHealth
-
 
 OLD = "1" * 40
 NEW = "2" * 40
@@ -173,7 +172,7 @@ def test_failed_shared_update_restores_original_branch_and_revision(tmp_path):
 
 def test_update_state_uses_daily_checks_and_six_hour_retry(tmp_path):
     store = HermesUpdateStateStore(tmp_path)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     store.save(HermesUpdateState(last_checked_at=(now - timedelta(hours=23)).isoformat()))
     assert not store.check_due(now)
     store.save(HermesUpdateState(last_checked_at=now.isoformat(), retry_after=(now + timedelta(hours=5)).isoformat()))
