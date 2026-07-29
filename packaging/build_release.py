@@ -23,7 +23,7 @@ from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HERMES_COMMIT = "8fc278207b0f5b25e567966f9615e1b1737f62af"
+HERMES_COMMIT = "ed005e482a8feaa8eecedaf24edb90a25e93567c"
 APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
