@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .app_update import AppUpdateController, AppUpdateInfo, AppUpdateStatus
 from .background_task import FunctionTask, start_task
 from .hermes_settings import MANAGED_TOOLSETS, HermesSettingsService, HermesSettingsSnapshot
 from .hermes_update import HermesUpdateController, HermesUpdateInfo, HermesUpdateResult, HermesUpdateStatus
@@ -84,6 +85,8 @@ class SettingsDialog(QDialog):
         backend_reconfigure: Callable[[], None] | None = None,
         backend_status: str = "",
         update_controller: HermesUpdateController | None = None,
+        app_update_controller: AppUpdateController | None = None,
+        clear_memory_state: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._initial = preferences
@@ -96,6 +99,8 @@ class SettingsDialog(QDialog):
         self._backend_reconfigure = backend_reconfigure
         self._backend_status = backend_status
         self._update_controller = update_controller
+        self._app_update_controller = app_update_controller
+        self._clear_memory_state = clear_memory_state
         self._snapshot = HermesSettingsSnapshot("", "auto", "none", (), (), False)
         self._hermes_task: FunctionTask | None = None
         self.setWindowTitle("爱弥斯设置")
@@ -126,6 +131,13 @@ class SettingsDialog(QDialog):
             if self._update_controller.info is not None:
                 self._update_info_changed(self._update_controller.info)
             self._update_state_changed(self._update_controller.state.value)
+        if self._app_update_controller is not None:
+            self._app_update_controller.info_changed.connect(self._app_update_info_changed)
+            self._app_update_controller.state_changed.connect(self._app_update_state_changed)
+            self._app_update_controller.failed.connect(self._app_update_failed)
+            if self._app_update_controller.info is not None:
+                self._app_update_info_changed(self._app_update_controller.info)
+            self._app_update_state_changed(self._app_update_controller.state.value)
         if self._hermes is not None and not self._shared_hermes:
             QTimer.singleShot(0, self._load_hermes_async)
 
@@ -231,6 +243,19 @@ class SettingsDialog(QDialog):
         quiet_row.addStretch(1)
         self.hermes_update_checks = QCheckBox("每天检查 Hermes 官方更新（安装前仍会确认）", card)
         self.hermes_update_checks.setChecked(self._initial.hermes_update_checks_enabled)
+        self.app_update_checks = QCheckBox("Ameath 应用更新（下载前确认）", card)
+        self.app_update_checks.setChecked(self._initial.app_update_checks_enabled)
+        self.memory_cues = QCheckBox("允许 Hermes 生成安全的兴趣、目标和话题提示（默认关闭）", card)
+        self.memory_cues.setChecked(self._initial.memory_cues_enabled and self._initial.memory_consent_version >= 1)
+        self.clear_memory = QPushButton("清除爱弥斯学习提示", card)
+        self.clear_memory.setEnabled(self._clear_memory_state is not None)
+        if self._clear_memory_state is not None:
+            self.clear_memory.clicked.connect(self._clear_memory_state)
+        self.reduced_motion = QCheckBox("减少动画", card)
+        self.reduced_motion.setChecked(self._initial.reduced_motion)
+        self.low_power = QComboBox(card)
+        self.low_power.addItems(["auto", "on", "off"])
+        self.low_power.setCurrentText(self._initial.low_power_mode)
         self.animation_speed.value_changed.connect(self._preview_current)
         self.auto_collapse.value_changed.connect(self._preview_current)
         self.always_top.toggled.connect(self._preview_current)
@@ -251,6 +276,15 @@ class SettingsDialog(QDialog):
         card_layout.addWidget(self.do_not_disturb)
         card_layout.addLayout(quiet_row)
         card_layout.addWidget(self.hermes_update_checks)
+        card_layout.addWidget(self.app_update_checks)
+        card_layout.addWidget(self.memory_cues)
+        card_layout.addWidget(self.clear_memory)
+        card_layout.addWidget(self.reduced_motion)
+        power_row = QHBoxLayout()
+        power_row.addWidget(QLabel("低功耗模式", card))
+        power_row.addWidget(self.low_power)
+        power_row.addStretch(1)
+        card_layout.addLayout(power_row)
         layout.addWidget(card)
         layout.addStretch(1)
         return tab
@@ -270,6 +304,7 @@ class SettingsDialog(QDialog):
                 card.layout().addWidget(button)
             layout.addWidget(card)
             self._add_update_card(layout)
+            self._add_app_update_card(layout)
             layout.addStretch(1)
             return tab
         status = "运行中" if self._snapshot.gateway_running else "未检测到运行中的 Gateway"
@@ -315,6 +350,7 @@ class SettingsDialog(QDialog):
             card_layout.addWidget(switch)
         layout.addWidget(card)
         self._add_update_card(layout)
+        self._add_app_update_card(layout)
         layout.addStretch(1)
         return tab
 
@@ -340,6 +376,26 @@ class SettingsDialog(QDialog):
         if self._update_controller is None:
             self.check_update_button.setEnabled(False)
             self.check_update_button.setToolTip("当前运行方式无法安全更新 Hermes")
+        layout.addWidget(card)
+
+    def _add_app_update_card(self, layout: QVBoxLayout) -> None:
+        card = self._card("Ameath 应用更新", "只跟踪官方 GitHub 正式版本；下载会校验 SHA-256，安装需要再次确认。",)
+        self.app_update_version_label = QLabel("当前版本：等待检查", card)
+        self.app_update_version_label.setObjectName("muted")
+        self.app_update_version_label.setWordWrap(True)
+        row = QHBoxLayout()
+        self.check_app_update_button = QPushButton("检查 Ameath 更新", card)
+        self.check_app_update_button.clicked.connect(self._check_app_update)
+        self.install_app_update_button = QPushButton("下载并安装", card)
+        self.install_app_update_button.setEnabled(False)
+        self.install_app_update_button.clicked.connect(self._apply_app_update)
+        row.addWidget(self.check_app_update_button)
+        row.addWidget(self.install_app_update_button)
+        row.addStretch(1)
+        card.layout().addWidget(self.app_update_version_label)
+        card.layout().addLayout(row)
+        if self._app_update_controller is None:
+            self.check_app_update_button.setEnabled(False)
         layout.addWidget(card)
 
     def _card(self, title: str, description: str) -> QFrame:
@@ -378,6 +434,11 @@ class SettingsDialog(QDialog):
             auto_game_mode=self.auto_game.isChecked(),
             do_not_disturb=self.do_not_disturb.isChecked(),
             hermes_update_checks_enabled=self.hermes_update_checks.isChecked(),
+            app_update_checks_enabled=self.app_update_checks.isChecked(),
+            memory_cues_enabled=self.memory_cues.isChecked(),
+            memory_consent_version=1 if self.memory_cues.isChecked() else 0,
+            reduced_motion=self.reduced_motion.isChecked(),
+            low_power_mode=self.low_power.currentText(),
         )
 
     def _preview_current(self, *_: object) -> None:
@@ -556,6 +617,50 @@ class SettingsDialog(QDialog):
             self.install_update_button.setText("正在验证…")
         else:
             self.install_update_button.setText("更新 Hermes")
+
+    def _check_app_update(self) -> None:
+        if self._app_update_controller is not None:
+            self._app_update_controller.check()
+
+    def _apply_app_update(self) -> None:
+        controller = self._app_update_controller
+        if controller is None or controller.info is None or not controller.info.update_available:
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认更新 Ameath",
+            f"将下载并校验 Ameath {controller.info.target_version} 安装包，完成后启动安装程序。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            controller.apply()
+
+    def _app_update_info_changed(self, value: object) -> None:
+        if not isinstance(value, AppUpdateInfo) or not hasattr(self, "app_update_version_label"):
+            return
+        text = f"当前：{value.current_version}"
+        if value.update_available:
+            text += f"；官方最新：{value.target_version}"
+        else:
+            text += "；已是最新正式版"
+        self.app_update_version_label.setText(text)
+        self.install_app_update_button.setEnabled(value.update_available and not self._app_update_controller.busy)
+
+    def _app_update_state_changed(self, value: str) -> None:
+        if not hasattr(self, "check_app_update_button") or self._app_update_controller is None:
+            return
+        status = AppUpdateStatus(value)
+        busy = status in {AppUpdateStatus.CHECKING, AppUpdateStatus.DOWNLOADING}
+        self.check_app_update_button.setEnabled(not busy)
+        self.install_app_update_button.setEnabled(
+            not busy and self._app_update_controller.info is not None and self._app_update_controller.info.update_available
+        )
+        self.check_app_update_button.setText("正在检查…" if status is AppUpdateStatus.CHECKING else "检查 Ameath 更新")
+        self.install_app_update_button.setText("正在下载…" if status is AppUpdateStatus.DOWNLOADING else "下载并安装")
+
+    def _app_update_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Ameath 更新失败", message)
 
     def _update_failed(self, message: str) -> None:
         QMessageBox.warning(self, "Hermes 更新未完成", message)
