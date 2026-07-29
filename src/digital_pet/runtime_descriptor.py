@@ -95,9 +95,10 @@ $expected = '{expected_source}'
 $current = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'
 for ($step = 0; $step -lt 4 -and $null -ne $current; $step++) {{
   $line = [string]$current.CommandLine
-  $gateway = $line -match 'hermes_cli' -and $line -match 'gateway'
-  if ($step -eq 0 -and -not $gateway) {{ break }}
-  if ($gateway -and $line.ToLowerInvariant().Contains($expected)) {{ 'true'; exit 0 }}
+  $ownsSource = $line.ToLowerInvariant().Contains($expected)
+  $gateway = ($line -match 'hermes(?:_cli)?') -and ($line -match 'gateway([ ]|$)')
+  if ($step -eq 0 -and -not $ownsSource -and -not $gateway) {{ break }}
+  if ($gateway -and $ownsSource) {{ 'true'; exit 0 }}
   $parent = [int]$current.ParentProcessId
   if ($parent -le 0 -or $parent -eq [int]$current.ProcessId) {{ break }}
   $current = Get-CimInstance Win32_Process -Filter "ProcessId = $parent"

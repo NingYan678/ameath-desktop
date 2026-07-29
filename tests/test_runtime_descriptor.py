@@ -52,6 +52,9 @@ def test_gateway_identity_uses_one_hidden_parent_chain_query(monkeypatch, tmp_pa
     command, kwargs = calls[0]
     assert command[:5] == ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
     assert "for ($step" in command[-1]
+    assert "$ownsSource" in command[-1]
+    assert "hermes(?:_cli)?" in command[-1]
+    assert "gateway([ ]|$)" in command[-1]
     assert kwargs["creationflags"]
 
 
