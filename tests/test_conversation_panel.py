@@ -39,6 +39,17 @@ def test_streaming_draft_is_replaced_by_one_final_assistant_message(app):
     assert not panel.is_streaming
 
 
+def test_new_status_replaces_previous_chat_in_compact_preview(app):
+    panel = ConversationPanel()
+
+    panel.add_user_message("hello")
+    panel.finalize_assistant("上一条回答")
+    panel.collapse(force=True)
+    panel.show_status("新的主动互动")
+
+    assert panel.compact_assistant.text() == "爱弥斯：新的主动互动"
+
+
 def test_assistant_markdown_uses_rich_text_but_user_text_stays_plain(app):
     panel = ConversationPanel()
     panel.add_user_message("<b>user</b>")

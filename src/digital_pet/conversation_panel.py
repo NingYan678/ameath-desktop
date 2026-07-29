@@ -270,6 +270,10 @@ class ConversationPanel(QWidget):
         content = content.strip()
         if not content:
             return
+        # A streamed answer is the new visible conversation state.  Clear the
+        # transient "message handed to Hermes" label so the compact preview
+        # cannot keep showing that older status once the draft arrives.
+        self._status_text = ""
         self._streaming = True
         if self._messages and self._messages[-1].role == "assistant" and self._messages[-1].draft:
             self._messages[-1].content = content
@@ -285,6 +289,10 @@ class ConversationPanel(QWidget):
         content = content.strip()
         self._streaming = False
         self._draft_render_timer.stop()
+        # Once Hermes has answered, the answer itself becomes the compact
+        # preview.  Later proactive/status bubbles can then replace it through
+        # show_status() and remain visible after the chat collapses.
+        self._status_text = ""
         if not content:
             self._render()
             return
@@ -542,9 +550,13 @@ class ConversationPanel(QWidget):
         self.status_label.setText(self._status_text or "已就绪")
         last_user = next((item.content for item in reversed(self._messages) if item.role == "user"), "")
         last_assistant = next((item.content for item in reversed(self._messages) if item.role == "assistant"), self._status_text)
-        last_assistant = markdown_to_plain(last_assistant)
+        # A short status/proactive bubble is newer than the last chat message.
+        # Prefer it in the compact preview so a collapsed window does not look
+        # stuck on an older conversation after the user has chatted.
+        preview = self._status_text or last_assistant
+        preview = markdown_to_plain(preview)
         self.compact_user.setText(self._elide(f"你：{last_user}") if last_user else "爱弥斯正在待命")
-        self.compact_assistant.setText(self._elide(f"爱弥斯：{last_assistant}") if last_assistant else "点击展开连续对话")
+        self.compact_assistant.setText(self._elide(f"爱弥斯：{preview}") if preview else "点击展开连续对话")
 
     def _render_messages(self) -> None:
         self._draft_browser = None
