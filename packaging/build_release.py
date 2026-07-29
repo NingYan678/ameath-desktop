@@ -1,8 +1,4 @@
-"""Build personal online and offline Windows installers for Ameath.
-
-Run on Windows from a checkout that has a known Hermes source tree. The script
-refuses to create an online installer without a checksum-pinned runtime URL.
-"""
+"""Build the reproducible offline Windows installer for Ameath."""
 
 from __future__ import annotations
 
@@ -14,16 +10,15 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from digital_pet.animation_catalog import PACKAGED_ASSET_FILES
 
-
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLED_HERMES_COMMIT = "ed005e482a8feaa8eecedaf24edb90a25e93567c"
+BUNDLED_HERMES_COMMIT = "41a07f5b8451f88a8b8b5adfc0cfdc2ada0a1f90"
 APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
@@ -63,6 +58,15 @@ def ignore_source(directory: str, names: list[str]) -> set[str]:
 def prepare_assets(stage: Path) -> Path:
     source_root = ROOT / "assets" / "recovered"
     target_root = stage / "assets" / "recovered"
+    available = {
+        path.relative_to(source_root).as_posix()
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+    if available != ASSET_FILES:
+        missing = sorted(ASSET_FILES - available)
+        extra = sorted(available - ASSET_FILES)
+        raise RuntimeError(f"Packaged asset directory does not match manifest: missing={missing}, extra={extra}")
     for relative_name in ASSET_FILES:
         source = source_root / relative_name
         if not source.is_file():
@@ -73,18 +77,57 @@ def prepare_assets(stage: Path) -> Path:
     return stage / "assets"
 
 
+def prepare_project_metadata(stage: Path, build_root: Path) -> None:
+    licenses = stage / "licenses"
+    licenses.mkdir(parents=True, exist_ok=True)
+    for filename in ("LICENSE", "NOTICE.md"):
+        shutil.copy2(ROOT / filename, licenses / filename)
+    version_file = build_root / "version_info.txt"
+    version_tuple = APP_VERSION.split(".")
+    version_file.write_text(
+        "# UTF-8\n"
+        "VSVersionInfo(\n"
+        f"  ffi=FixedFileInfo(filevers=({', '.join(version_tuple)}, 0), "
+        f"prodvers=({', '.join(version_tuple)}, 0), mask=0x3f, flags=0x0, "
+        "OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),\n"
+        "  kids=[StringFileInfo([StringTable('040904B0', ["
+        "StringStruct('CompanyName', 'NingYan678'), "
+        "StringStruct('FileDescription', 'Ameath Desktop Pet'), "
+        f"StringStruct('FileVersion', '{APP_VERSION}'), "
+        "StringStruct('InternalName', 'Ameath'), "
+        "StringStruct('OriginalFilename', 'Ameath.exe'), "
+        "StringStruct('ProductName', 'Ameath Desktop Pet'), "
+        f"StringStruct('ProductVersion', '{APP_VERSION}')])])],\n"
+        "  )\n",
+        encoding="utf-8",
+    )
+
+
+def prepare_platform(stage: Path) -> Path:
+    """Copy the bundled Hermes plugin without local caches or bytecode."""
+    source = ROOT / "hermes_platform"
+    target = stage / "hermes_platform"
+    remove_tree(target)
+    shutil.copytree(source, target, ignore=ignore_source)
+    return target
+
+
 def build_frontend(stage: Path, build_root: Path) -> None:
     app, dist, work = stage / "app", build_root / "pyinstaller", build_root / "pyinstaller-work"
     for path in (app, dist, work):
         remove_tree(path)
     separator = ";" if os.name == "nt" else ":"
+    prepare_project_metadata(stage, build_root)
+    platform_root = prepare_platform(stage)
     run(
         "uv", "run", "--with", "pyinstaller==6.14.2",
         "--with", "PySide6>=6.7,<7", "--with", "python-dotenv>=1.0,<2",
         "pyinstaller", "--noconfirm", "--clean", "--windowed", "--name", "Ameath",
         "--paths", str(ROOT / "src"),
+        "--icon", str(ROOT / "assets" / "recovered" / "gifs" / "ameath.ico"),
+        "--version-file", str(build_root / "version_info.txt"),
         "--add-data", f"{prepare_assets(stage)}{separator}assets",
-        "--add-data", f"{ROOT / 'hermes_platform'}{separator}hermes_platform",
+        "--add-data", f"{platform_root}{separator}hermes_platform",
         "--add-data", f"{ROOT / 'VERSION'}{separator}.",
         "--distpath", str(dist), "--workpath", str(work), "--specpath", str(build_root), str(ROOT / "packaging" / "ameath_entry.py"),
     )
@@ -147,41 +190,20 @@ def archive_runtime(runtime: Path, build_root: Path) -> Path:
     return archive
 
 
-def make_online_runtime(stage: Path, runtime_url: str, runtime_sha256: str) -> None:
-    runtime = stage / "runtime"
-    runtime.mkdir(parents=True, exist_ok=True)
-    (runtime / "runtime_manifest.json").write_text(
-        json.dumps(
-            {
-                "url": runtime_url,
-                "sha256": runtime_sha256,
-                "hermes_commit": BUNDLED_HERMES_COMMIT,
-                "bundled_hermes_commit": BUNDLED_HERMES_COMMIT,
-            },
-            indent=2,
-        ) + "\n",
-        encoding="utf-8",
-    )
-    shutil.copy2(ROOT / "packaging" / "runtime-bootstrap.ps1", runtime / "runtime-bootstrap.ps1")
-
-
-def compile_installer(mode: str, stage: Path) -> None:
+def compile_installer(stage: Path) -> None:
     user_iscc = Path(os.getenv("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe"
     iscc = shutil.which("ISCC.exe") or shutil.which("ISCC") or (str(user_iscc) if user_iscc.is_file() else None)
     if not iscc:
         raise RuntimeError("Inno Setup 6 is required. Install it, then rerun this build command.")
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)
-    run(iscc, f"/DAppVersion={APP_VERSION}", f"/DBuildMode={mode}", f"/DStageDir={stage}", f"/O{output}", str(ROOT / "packaging" / "Ameath.iss"))
+    run(iscc, f"/DAppVersion={APP_VERSION}", f"/DStageDir={stage}", f"/O{output}", str(ROOT / "packaging" / "Ameath.iss"))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("online", "offline", "all"), default="all")
     parser.add_argument("--hermes-source", type=Path, default=Path(r"D:\hermes\hermes-agent"))
     parser.add_argument("--python", default="3.12")
-    parser.add_argument("--runtime-url", default="")
-    parser.add_argument("--runtime-sha256", default="")
     parser.add_argument("--skip-installer", action="store_true")
     parser.add_argument("--keep-build", action="store_true", help="keep temporary release work under build/installer for diagnosis")
     args = parser.parse_args()
@@ -208,20 +230,13 @@ def main() -> int:
         remove_tree(build_root)
         build_root.mkdir(parents=True)
     try:
-        modes = ("online", "offline") if args.mode == "all" else (args.mode,)
-        for mode in modes:
-            stage = build_root / mode
-            stage.mkdir(parents=True)
-            build_frontend(stage, build_root)
-            if mode == "offline":
-                archive = archive_runtime(build_runtime(stage, args.hermes_source, args.python), build_root)
-                print(f"Offline runtime: {archive} ({sha256(archive)})")
-            else:
-                if not args.runtime_url or not args.runtime_sha256:
-                    raise RuntimeError("Online builds require --runtime-url and --runtime-sha256 from the offline runtime archive.")
-                make_online_runtime(stage, args.runtime_url, args.runtime_sha256)
-            if not args.skip_installer:
-                compile_installer(mode, stage)
+        stage = build_root / "offline"
+        stage.mkdir(parents=True)
+        build_frontend(stage, build_root)
+        archive = archive_runtime(build_runtime(stage, args.hermes_source, args.python), build_root)
+        print(f"Offline runtime: {archive} ({sha256(archive)})")
+        if not args.skip_installer:
+            compile_installer(stage)
     finally:
         if not args.keep_build:
             remove_tree(build_root)

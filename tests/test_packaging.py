@@ -39,6 +39,9 @@ def test_release_build_uses_temporary_work_and_a_runtime_asset_allowlist():
 
     assert "tempfile.mkdtemp" in build
     assert "prepare_assets(stage)" in build
+    assert "platform_root = prepare_platform(stage)" in build
+    assert "f\"{platform_root}{separator}hermes_platform\"" in build
+    assert "f\"{ROOT / 'hermes_platform'}{separator}hermes_platform\"" not in build
     assert "PACKAGED_ASSET_FILES" in build
     assert "gifs/screen3.gif" in PACKAGED_ASSET_FILES
     assert "gifs/idle1.gif" not in PACKAGED_ASSET_FILES

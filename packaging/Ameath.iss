@@ -5,9 +5,6 @@
 #ifndef AppGuid
   #define AppGuid "8E3B2B32-263F-4605-91B7-DC8CA146B4A0"
 #endif
-#ifndef BuildMode
-  #define BuildMode "offline"
-#endif
 #ifndef StageDir
   #define StageDir "build\\installer\\offline"
 #endif
@@ -16,13 +13,18 @@
 AppId={{{#AppGuid}}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=Personal use only
+AppPublisher=NingYan678
+AppPublisherURL=https://github.com/NingYan678/ameath-desktop
+AppSupportURL=https://github.com/NingYan678/ameath-desktop/issues
+AppUpdatesURL=https://github.com/NingYan678/ameath-desktop/releases
+VersionInfoVersion={#AppVersion}
+VersionInfoProductVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\Ameath
 DisableDirPage=no
 UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-OutputBaseFilename=Ameath-{#AppVersion}-{#BuildMode}-setup
+OutputBaseFilename=Ameath-{#AppVersion}-offline-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -46,9 +48,6 @@ Name: "{autoprograms}\爱弥斯"; Filename: "{app}\app\Ameath.exe"
 Name: "{autodesktop}\启动爱弥斯"; Filename: "{app}\app\Ameath.exe"
 
 [Run]
-#if BuildMode == "online"
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\runtime\runtime-bootstrap.ps1"""; StatusMsg: "正在下载并验证爱弥斯运行环境…"; Flags: waituntilterminated
-#endif
 Filename: "{app}\app\Ameath.exe"; Description: "安装完成后启动爱弥斯"; Flags: nowait postinstall skipifsilent
 
 [Code]
