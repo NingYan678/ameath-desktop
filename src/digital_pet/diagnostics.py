@@ -1,8 +1,7 @@
-"""Redacted local diagnostics and optional anonymous crash reports."""
+"""Redacted local diagnostics generated entirely on the user's machine."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import platform
@@ -35,10 +34,6 @@ class DiagnosticsService:
                 archive.writestr(log.name, sanitized)
             archive.writestr("environment.json", json.dumps({"version": self.version, "platform": platform.platform()}, ensure_ascii=False, indent=2))
         return destination
-
-    @staticmethod
-    def crash_payload(exc: BaseException) -> dict[str, str]:
-        return {"exception": type(exc).__name__, "fingerprint": hashlib.sha256(f"{type(exc).__name__}:{exc}".encode()).hexdigest()[:16], "python": platform.python_version(), "system": platform.system()}
 
     @staticmethod
     def redact(text: str) -> str:

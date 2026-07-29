@@ -24,6 +24,7 @@ if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", APP_VERSION) is None:
     raise RuntimeError("VERSION must contain a valid SemVer value")
 SKIP_SOURCE_NAMES = {".git", ".github", ".plans", "tests", "tests-js", "docs", "website", "node_modules", "venv", ".venv", ".cache", "build", "dist", "__pycache__"}
 ASSET_FILES = PACKAGED_ASSET_FILES
+CONTENT_FILES = frozenset({"content/companion_zh-CN.json"})
 
 
 def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -51,6 +52,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_checksum(path: Path) -> Path:
+    checksum_path = path.with_suffix(path.suffix + ".sha256")
+    checksum_path.write_text(f"{sha256(path)}  {path.name}\n", encoding="utf-8")
+    return checksum_path
+
+
 def ignore_source(directory: str, names: list[str]) -> set[str]:
     return {name for name in names if name in SKIP_SOURCE_NAMES or name.endswith(".pyc")}
 
@@ -74,7 +81,26 @@ def prepare_assets(stage: Path) -> Path:
         target = target_root / relative_name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    prepare_content(stage)
     return stage / "assets"
+
+
+def prepare_content(stage: Path) -> Path:
+    source_root = ROOT / "assets"
+    target_root = stage / "assets"
+    available = {
+        path.relative_to(source_root).as_posix()
+        for path in (source_root / "content").rglob("*")
+        if path.is_file()
+    }
+    if available != CONTENT_FILES:
+        raise RuntimeError(f"Packaged content directory does not match manifest: {sorted(available)}")
+    for relative_name in CONTENT_FILES:
+        source = source_root / relative_name
+        target = target_root / relative_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return target_root
 
 
 def prepare_project_metadata(stage: Path, build_root: Path) -> None:
@@ -200,6 +226,27 @@ def compile_installer(stage: Path) -> None:
     run(iscc, f"/DAppVersion={APP_VERSION}", f"/DStageDir={stage}", f"/O{output}", str(ROOT / "packaging" / "Ameath.iss"))
 
 
+def sign_artifact(path: Path) -> bool:
+    """Sign when CI provides a PFX; unsigned local builds remain supported."""
+    certificate = os.getenv("AMEATH_SIGN_CERT", "").strip()
+    if not certificate:
+        print(f"Unsigned artifact (no AMEATH_SIGN_CERT): {path.name}")
+        return False
+    signtool = shutil.which("signtool.exe") or shutil.which("signtool")
+    if not signtool:
+        raise RuntimeError("AMEATH_SIGN_CERT is set but signtool.exe was not found.")
+    command = [signtool, "sign", "/fd", "SHA256", "/f", certificate]
+    password = os.getenv("AMEATH_SIGN_PASSWORD", "")
+    if password:
+        command.extend(["/p", password])
+    timestamp = os.getenv("AMEATH_TIMESTAMP_URL", "http://timestamp.digicert.com").strip()
+    if timestamp:
+        command.extend(["/tr", timestamp, "/td", "SHA256"])
+    command.append(str(path))
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hermes-source", type=Path, default=Path(r"D:\hermes\hermes-agent"))
@@ -235,8 +282,15 @@ def main() -> int:
         build_frontend(stage, build_root)
         archive = archive_runtime(build_runtime(stage, args.hermes_source, args.python), build_root)
         print(f"Offline runtime: {archive} ({sha256(archive)})")
+        if os.getenv("AMEATH_SIGN_CERT"):
+            sign_artifact(stage / "app" / "Ameath.exe")
         if not args.skip_installer:
             compile_installer(stage)
+            installer = ROOT / "dist" / f"Ameath-{APP_VERSION}-offline-setup.exe"
+            if installer.is_file() and os.getenv("AMEATH_SIGN_CERT"):
+                sign_artifact(installer)
+            if installer.is_file():
+                write_checksum(installer)
     finally:
         if not args.keep_build:
             remove_tree(build_root)

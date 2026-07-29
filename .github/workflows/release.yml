@@ -1,0 +1,42 @@
+name: Windows release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      - name: Install development tools
+        run: uv pip install --system -r requirements-dev.txt
+      - name: Run quality gates
+        run: |
+          python -m compileall -q src tests packaging hermes_platform
+          python -m ruff check src tests packaging hermes_platform
+          python -m pytest -q
+      - name: Fetch pinned Hermes baseline
+        shell: pwsh
+        run: |
+          git clone https://github.com/NousResearch/hermes-agent.git "$env:RUNNER_TEMP\hermes-agent"
+          git -C "$env:RUNNER_TEMP\hermes-agent" fetch --depth 1 origin 41a07f5b8451f88a8b8b5adfc0cfdc2ada0a1f90
+          git -C "$env:RUNNER_TEMP\hermes-agent" checkout --detach 41a07f5b8451f88a8b8b5adfc0cfdc2ada0a1f90
+      - name: Build offline installer
+        env:
+          AMEATH_SIGN_CERT: ${{ secrets.AMEATH_SIGN_CERT }}
+          AMEATH_SIGN_PASSWORD: ${{ secrets.AMEATH_SIGN_PASSWORD }}
+          AMEATH_TIMESTAMP_URL: ${{ secrets.AMEATH_TIMESTAMP_URL }}
+        run: python packaging/build_release.py --hermes-source "$env:RUNNER_TEMP\hermes-agent"
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/Ameath-*.exe dist/Ameath-*.sha256 --draft --title "Ameath ${{ github.ref_name }}" --generate-notes
