@@ -62,22 +62,6 @@ def ignore_source(directory: str, names: list[str]) -> set[str]:
     return {name for name in names if name in SKIP_SOURCE_NAMES or name.endswith(".pyc")}
 
 
-def is_within(path: Path, root: Path) -> bool:
-    """Check containment while tolerating Windows 8.3/long-path aliases."""
-    # The fast path is equivalent to ``path.is_relative_to(runtime.resolve())``;
-    # samefile below covers aliases returned by uv on hosted Windows runners.
-    try:
-        if path.resolve().is_relative_to(root.resolve()):
-            return True
-    except OSError:
-        pass
-    try:
-        candidate = path if path.is_dir() else path.parent
-        return any(os.path.samefile(parent, root) for parent in (candidate, *candidate.parents))
-    except (OSError, ValueError):
-        return False
-
-
 def prepare_assets(stage: Path) -> Path:
     source_root = ROOT / "assets" / "recovered"
     target_root = stage / "assets" / "recovered"
@@ -188,8 +172,8 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
     interpreters = tuple(python_root.glob("*/python.exe"))
     if not interpreters:
         raise RuntimeError("uv did not create a portable Python interpreter in the release staging directory")
-    interpreter = max(interpreters, key=lambda candidate: candidate.stat().st_mtime_ns)
-    if not interpreter.is_file() or not is_within(interpreter, runtime):
+    interpreter = max(interpreters, key=lambda candidate: candidate.stat().st_mtime_ns).resolve()
+    if not interpreter.is_file() or not interpreter.is_relative_to(runtime.resolve()):
         raise RuntimeError("uv did not install a portable Python inside the release staging directory")
     # Hermes intentionally blocks wheel builds; the shipped source tree is the
     # runtime, so an editable install is the supported production layout here.
@@ -198,15 +182,15 @@ def build_runtime(stage: Path, hermes_source: Path, python_version: str) -> Path
         "-e", str(source_target), "aiohttp==3.14.1", "pip",
     )
     prefix = Path(subprocess.check_output([str(interpreter), "-c", "import sys; print(sys.prefix)"], text=True).strip()).resolve()
-    if not is_within(prefix, runtime):
+    if not prefix.is_relative_to(runtime.resolve()):
         raise RuntimeError("staged Hermes Python resolved outside the release staging directory")
     hermes_module = Path(subprocess.check_output([str(interpreter), "-c", "import hermes_cli; print(hermes_cli.__file__)"], text=True).strip()).resolve()
-    if not is_within(hermes_module, runtime):
+    if not hermes_module.is_relative_to(runtime.resolve()):
         raise RuntimeError("staged Hermes source resolved outside the release staging directory")
     (runtime / "runtime_metadata.json").write_text(
         json.dumps(
             {
-                "python_relative_path": os.path.relpath(interpreter, runtime).replace(os.sep, "/"),
+                "python_relative_path": interpreter.relative_to(runtime).as_posix(),
                 "hermes_commit": BUNDLED_HERMES_COMMIT,
                 "bundled_hermes_commit": BUNDLED_HERMES_COMMIT,
                 "python_version": python_version,
